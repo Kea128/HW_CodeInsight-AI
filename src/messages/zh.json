@@ -1,8 +1,8 @@
 {
   "common": {
-    "appName": "DeepWiki-Open",
-    "tagline": "AI驱动的文档",
-    "generateWiki": "生成Wiki",
+    "appName": "CodeInsight-AI",
+    "tagline": "持续理解代码，沉淀可信文档",
+    "generateWiki": "开始分析",
     "processing": "处理中...",
     "error": "错误",
     "submit": "提交",
@@ -11,21 +11,21 @@
     "loading": "加载中..."
   },
   "loading": {
-    "initializing": "初始化Wiki生成...",
+    "initializing": "正在初始化代码分析...",
     "fetchingStructure": "获取仓库结构...",
     "preparingIndex": "准备仓库索引...",
-    "determiningStructure": "验证Wiki结构...",
+    "determiningStructure": "正在理解项目架构...",
     "clearingCache": "清除服务器缓存...",
     "preparingDownload": "请等待，我们正在准备您的下载..."
   },
   "home": {
-    "welcome": "欢迎使用DeepWiki",
-    "welcomeTagline": "为代码仓库提供AI驱动的文档",
-    "description": "只需一次点击，即可从GitHub、GitLab或Bitbucket仓库生成全面的文档。",
+    "welcome": "欢迎使用 CodeInsight-AI",
+    "welcomeTagline": "持续运行的 AI 代码理解与分析工作台",
+    "description": "分析 GitHub、GitLab、Bitbucket 或本地代码库，持续修正理解结果并生成可追溯的高质量文档。",
     "quickStart": "快速开始",
     "enterRepoUrl": "请以下列格式之一输入仓库URL：",
     "advancedVisualization": "使用Mermaid图表进行高级可视化",
-    "diagramDescription": "DeepWiki自动生成交互式图表，帮助您理解代码结构和关系：",
+    "diagramDescription": "CodeInsight-AI 自动生成交互式图表，帮助您理解代码结构和关系：",
     "flowDiagram": "流程图",
     "sequenceDiagram": "序列图"
   },
@@ -85,7 +85,7 @@
     "authorizationRequired": "生成wiki页面需要填写授权码"
   },
   "footer": {
-    "copyright": "DeepWiki - 为代码仓库提供AI驱动的文档"
+    "copyright": "CodeInsight-AI - 本地优先的持续代码理解工具"
   },
   "ask": {
     "placeholder": "询问关于此仓库的问题...",
@@ -116,7 +116,8 @@
     "askAboutRepo": "询问关于此仓库的问题"
   },
   "nav": {
-    "wikiProjects": "项目列表"
+    "wikiProjects": "项目列表",
+    "modelSettings": "模型与策略"
   },
   "projects": {
     "title": "已处理的Wiki项目",

@@ -55,6 +55,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -67,3 +68,9 @@ next-env.d.ts
 
 # ignore adding self-signed certs
 certs/
+
+# Desktop release artifacts
+/src-tauri/target/
+/src-tauri/binaries/*
+!/src-tauri/binaries/.gitkeep
+/*.spec

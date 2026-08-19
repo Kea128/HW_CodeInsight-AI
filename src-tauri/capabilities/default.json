@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "CodeInsight-AI desktop permissions",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "updater:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/codeinsight-daemon",
+          "sidecar": true
+        }
+      ]
+    }
+  ]
+}

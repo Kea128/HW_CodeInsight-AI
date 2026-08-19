@@ -255,7 +255,12 @@ async def list_wiki_tasks(
     completed = await list_wiki_cache()
     if status == "completed":
         return completed
-    return completed + active
+    interrupted = [
+        task.to_summary()
+        for task in registry.all()
+        if task.status in (TaskStatus.FAILED, TaskStatus.CANCELLED)
+    ]
+    return completed + interrupted + active
 
 
 @router.get("/wiki/tasks/{task_id}", response_model=WikiTaskStatus)
@@ -263,6 +268,34 @@ async def get_wiki_task(task_id: str):
     """Single task status + progress (SPEC.md §9). 404 once the task is gone —
     the frontend then falls back to the wiki cache."""
     task = registry.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task.to_status()
+
+
+@router.post("/wiki/tasks/{task_id}/pause", response_model=WikiTaskStatus)
+async def pause_wiki_task(task_id: str):
+    task = await registry.pause(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status.is_terminal():
+        raise HTTPException(status_code=409, detail="Terminal task cannot be paused")
+    return task.to_status()
+
+
+@router.post("/wiki/tasks/{task_id}/resume", response_model=WikiTaskStatus)
+async def resume_wiki_task(task_id: str):
+    task = await registry.resume(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status.is_terminal():
+        raise HTTPException(status_code=409, detail="Terminal task cannot be resumed")
+    return task.to_status()
+
+
+@router.post("/wiki/tasks/{task_id}/cancel", response_model=WikiTaskStatus)
+async def cancel_wiki_task(task_id: str):
+    task = await registry.cancel(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task.to_status()
@@ -288,6 +321,9 @@ async def stream_wiki_task(task_id: str):
                 return
             if task.status == TaskStatus.FAILED:
                 yield f"event: error\ndata: {payload}\n\n"
+                return
+            if task.status == TaskStatus.CANCELLED:
+                yield f"event: cancelled\ndata: {payload}\n\n"
                 return
             yield f"event: progress\ndata: {payload}\n\n"
             await asyncio.sleep(1)

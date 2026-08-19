@@ -7,6 +7,7 @@ from api.schemas.codemap import (
     CodeMapSection,
     CodeMapStep,
 )
+from api.schemas.continuous import ContinuousAnalysisRequest, ContinuousProject
 from api.schemas.io import aload, asave
 from api.schemas.models import (
     Model,
@@ -41,6 +42,8 @@ __all__ = [
     "CodeMapRequest",
     "CodeMapSection",
     "CodeMapStep",
+    "ContinuousAnalysisRequest",
+    "ContinuousProject",
     "Model",
     "ModelConfig",
     "ProcessedProjectEntry",

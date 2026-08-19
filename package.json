@@ -1,12 +1,14 @@
 {
-  "name": "deepwiki-open",
+  "name": "codeinsight-ai",
   "version": "0.1.0",
   "private": true,
+  "description": "Local-first continuous AI code understanding for desktop and VS Code.",
   "scripts": {
     "dev": "next dev --turbopack --port 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "tauri": "tauri"
   },
   "dependencies": {
     "mermaid": "^11.4.1",

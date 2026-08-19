@@ -15,7 +15,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 
 // Define the demo mermaid charts outside the component
 const DEMO_FLOW_CHART = `graph TD
-  A[Code Repository] --> B[DeepWiki]
+  A[Code Repository] --> B[CodeInsight-AI]
   B --> C[Architecture Diagrams]
   B --> D[Component Relationships]
   B --> E[Data Flow]
@@ -30,17 +30,17 @@ const DEMO_FLOW_CHART = `graph TD
 
 const DEMO_SEQUENCE_CHART = `sequenceDiagram
   participant User
-  participant DeepWiki
+  participant CodeInsight
   participant GitHub
 
-  User->>DeepWiki: Enter repository URL
-  DeepWiki->>GitHub: Request repository data
-  GitHub-->>DeepWiki: Return repository data
-  DeepWiki->>DeepWiki: Process and analyze code
-  DeepWiki-->>User: Display wiki with diagrams
+  User->>CodeInsight: Enter repository URL or local path
+  CodeInsight->>GitHub: Request repository data
+  GitHub-->>CodeInsight: Return repository data
+  CodeInsight->>CodeInsight: Process and analyze code
+  CodeInsight-->>User: Display verified analysis documents
 
   %% Add a note to make text more visible
-  Note over User,GitHub: DeepWiki supports sequence diagrams for visualizing interactions`;
+  Note over User,GitHub: CodeInsight-AI continuously improves its understanding`;
 
 export default function Home() {
   const router = useRouter();
@@ -404,10 +404,16 @@ export default function Home() {
               <div className="flex flex-wrap items-baseline gap-x-2 md:gap-x-3 mt-0.5">
                 <p className="text-xs text-[var(--muted)] whitespace-nowrap">{t('common.tagline')}</p>
                 <div className="hidden md:inline-block">
-                  <Link href="/wiki/projects"
-                    className="text-xs font-medium text-[var(--accent-primary)] hover:text-[var(--highlight)] hover:underline whitespace-nowrap">
-                    {t('nav.wikiProjects')}
-                  </Link>
+                  <div className="flex items-center gap-3">
+                    <Link href="/wiki/projects"
+                      className="text-xs font-medium text-[var(--accent-primary)] hover:text-[var(--highlight)] hover:underline whitespace-nowrap">
+                      {t('nav.wikiProjects')}
+                    </Link>
+                    <Link href="/settings/models"
+                      className="text-xs font-medium text-[var(--accent-primary)] hover:text-[var(--highlight)] hover:underline whitespace-nowrap">
+                      {t('nav.modelSettings')}
+                    </Link>
+                  </div>
                 </div>
               </div>
             </div>

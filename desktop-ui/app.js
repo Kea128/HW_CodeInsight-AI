@@ -1,0 +1,159 @@
+const API = "http://127.0.0.1:8001";
+const terminalStates = new Set(["completed", "failed", "cancelled"]);
+
+function setEngineStatus(text, kind) {
+  const element = document.querySelector("#engine-status");
+  element.textContent = text;
+  element.className = `badge ${kind}`;
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(`${API}${path}`, {
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `请求失败 (${response.status})`);
+  }
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+async function waitForEngine() {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await api("/");
+      setEngineStatus("本地引擎已就绪", "ready");
+      await loadTasks();
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  setEngineStatus("引擎启动失败", "failed");
+}
+
+function addButton(container, label, action, taskId, className = "secondary") {
+  const button = document.createElement("button");
+  button.textContent = label;
+  button.className = className;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await api(`/wiki/tasks/${encodeURIComponent(taskId)}/${action}`, {
+        method: "POST",
+      });
+      await loadTasks();
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  container.append(button);
+}
+
+function renderTask(task) {
+  const card = document.createElement("article");
+  card.className = "task";
+  const detail = document.createElement("div");
+  const title = document.createElement("h3");
+  title.textContent = task.name || `${task.owner}/${task.repo}`;
+  const status = document.createElement("p");
+  status.textContent = `${task.status} · ${task.pages_done}/${task.pages_total || "?"} 页`;
+  const progress = document.createElement("div");
+  progress.className = "progress";
+  const bar = document.createElement("span");
+  const percent = task.pages_total ? (task.pages_done / task.pages_total) * 100 : 3;
+  bar.style.width = `${Math.min(100, percent)}%`;
+  progress.append(bar);
+  detail.append(title, status, progress);
+
+  const actions = document.createElement("div");
+  actions.className = "task-actions";
+  if (!terminalStates.has(task.status)) {
+    if (task.status === "paused") {
+      addButton(actions, "继续", "resume", task.id);
+    } else {
+      addButton(actions, "暂停", "pause", task.id);
+    }
+    addButton(actions, "取消", "cancel", task.id, "danger");
+  }
+  card.append(detail, actions);
+  return card;
+}
+
+async function loadTasks() {
+  const list = document.querySelector("#task-list");
+  try {
+    const tasks = await api("/wiki/tasks");
+    list.replaceChildren();
+    if (!tasks.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "尚无分析任务。";
+      list.append(empty);
+      return;
+    }
+    tasks.forEach((task) => list.append(renderTask(task)));
+  } catch (error) {
+    list.textContent = error.message;
+  }
+}
+
+document.querySelector("#project-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = document.querySelector("#form-message");
+  const path = document.querySelector("#project-path").value.trim();
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const repo = parts.at(-1) || "project";
+  const nightOnly = document.querySelector("#night-only").checked;
+  const body = {
+    task: {
+      owner: "local",
+      repo,
+      type: "local",
+      repo_url: path,
+      language: "zh",
+      comprehensive: true,
+    },
+    night_start: nightOnly ? document.querySelector("#night-start").value : null,
+    night_end: nightOnly ? document.querySelector("#night-end").value : null,
+    poll_seconds: Number(document.querySelector("#poll-seconds").value),
+    analyze_now: true,
+  };
+  try {
+    message.className = "message";
+    message.textContent = "正在建立文件快照…";
+    await api("/continuous/projects", { method: "POST", body: JSON.stringify(body) });
+    message.textContent = "项目已加入持续分析。";
+    await loadTasks();
+  } catch (error) {
+    message.className = "message error";
+    message.textContent = error.message;
+  }
+});
+
+document.querySelector("#refresh-button").addEventListener("click", loadTasks);
+document.querySelector("#update-button").addEventListener("click", async () => {
+  const button = document.querySelector("#update-button");
+  button.disabled = true;
+  try {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!invoke) throw new Error("更新组件不可用");
+    const version = await invoke("install_update");
+    if (!version) {
+      window.alert("当前已是最新版本。");
+      return;
+    }
+    window.alert(`版本 ${version} 已安装，请重新启动应用。`);
+  } catch (error) {
+    window.alert(`检查更新失败：${error.message}`);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+waitForEngine();
+setInterval(loadTasks, 3000);

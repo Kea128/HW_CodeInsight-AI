@@ -1,0 +1,66 @@
+name: Desktop release
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend and desktop tooling
+        run: |
+          npm ci
+          npm install --no-save @tauri-apps/cli@latest
+
+      - name: Install and freeze the analysis daemon
+        run: |
+          python -m pip install poetry pyinstaller
+          poetry install --no-interaction
+          poetry run pyinstaller --noconfirm --clean --onefile --name codeinsight-daemon --paths . api/daemon.py
+          New-Item -ItemType Directory -Force src-tauri/binaries
+          Copy-Item dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
+
+      - name: Configure signed update channel
+        env:
+          UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          UPDATER_ENDPOINT: ${{ secrets.TAURI_UPDATER_ENDPOINT }}
+        run: |
+          if (-not $env:UPDATER_PUBLIC_KEY) { throw "Missing TAURI_UPDATER_PUBLIC_KEY" }
+          if (-not $env:UPDATER_ENDPOINT) { throw "Missing TAURI_UPDATER_ENDPOINT" }
+          $path = "src-tauri/tauri.conf.json"
+          $config = Get-Content $path -Raw
+          $config = $config.Replace("__TAURI_UPDATER_PUBLIC_KEY__", $env:UPDATER_PUBLIC_KEY)
+          $config = $config.Replace("https://github.com/AsyncFuncAI/deepwiki-open/releases/latest/download/latest.json", $env:UPDATER_ENDPOINT)
+          Set-Content $path $config -Encoding UTF8
+
+      - name: Build and publish signed installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: desktop-v__VERSION__
+          releaseName: "CodeInsight-AI Desktop v__VERSION__"
+          releaseBody: "Windows desktop preview with persistent tasks, recovery, file watching, night analysis, and signed online updates."
+          releaseDraft: true
+          prerelease: true

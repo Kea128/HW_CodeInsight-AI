@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CodeInsight-AI</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <p class="eyebrow">LOCAL-FIRST CODE INTELLIGENCE</p>
+        <h1>CodeInsight-AI</h1>
+      </div>
+      <div class="header-actions">
+        <span id="engine-status" class="badge waiting">引擎启动中</span>
+        <button id="update-button" class="secondary">检查更新</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <h2>持续理解你的代码库</h2>
+          <p>任务状态和逐页检查点保存在本机 SQLite 中。关闭应用或重启机器后，分析会从最近检查点继续。</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>添加本地项目</h2>
+        <form id="project-form">
+          <label>
+            项目绝对路径
+            <input id="project-path" required placeholder="D:\WorkSpace\my-project" />
+          </label>
+          <div class="row">
+            <label>
+              夜间开始
+              <input id="night-start" type="time" value="22:00" />
+            </label>
+            <label>
+              夜间结束
+              <input id="night-end" type="time" value="07:00" />
+            </label>
+            <label>
+              扫描间隔（秒）
+              <input id="poll-seconds" type="number" min="2" value="15" />
+            </label>
+          </div>
+          <label class="checkbox">
+            <input id="night-only" type="checkbox" />
+            仅在夜间窗口触发分析
+          </label>
+          <button type="submit">开始持续分析</button>
+        </form>
+        <p id="form-message" class="message"></p>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>分析任务</h2>
+          <button id="refresh-button" class="secondary">刷新</button>
+        </div>
+        <div id="task-list" class="task-list">
+          <p class="empty">正在读取任务…</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

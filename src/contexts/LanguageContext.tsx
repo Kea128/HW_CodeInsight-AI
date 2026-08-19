@@ -15,18 +15,18 @@ type LanguageContextType = {
 const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
-  // Initialize with 'en' or get from localStorage if available
-  const [language, setLanguageState] = useState<string>('en');
+  // CodeInsight-AI is Chinese-first while still allowing the user to switch languages.
+  const [language, setLanguageState] = useState<string>('zh');
   const [messages, setMessages] = useState<Messages>({});
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [supportedLanguages, setSupportedLanguages] = useState({})
-  const [defaultLanguage, setDefaultLanguage] = useState('en')
+  const [defaultLanguage, setDefaultLanguage] = useState('zh')
 
   // Helper function to detect browser language
   const detectBrowserLanguage = (): string => {
     try {
       if (typeof window === 'undefined' || typeof navigator === 'undefined') {
-        return 'en'; // Default to English on server-side
+        return 'zh';
       }
 
       // Get browser language (navigator.language returns full locale like 'en-US')
@@ -34,7 +34,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
       console.log('Detected browser language:', browserLang);
 
       if (!browserLang) {
-        return 'en'; // Default to English if browser language is not available
+        return 'zh';
       }
 
       // Normalise to lowercase full locale (e.g. 'zh-tw') and extract the base code (e.g. 'zh')
@@ -65,11 +65,11 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
         return langCode;
       }
 
-      console.log('Language not supported, defaulting to English');
-      return 'en'; // Default to English if not supported
+      console.log('Language not supported, defaulting to Simplified Chinese');
+      return 'zh';
     } catch (error) {
       console.error('Error detecting browser language:', error);
-      return 'en'; // Default to English on error
+      return 'zh';
     }
   };
 
@@ -99,7 +99,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
           "ru": "Русский (Russian)"
         };
         setSupportedLanguages(defaultSupportedLanguages);
-        setDefaultLanguage("en");
+        setDefaultLanguage("zh");
       }
     }
     getSupportedLanguages();
@@ -114,17 +114,16 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
           if (typeof window !== 'undefined') {
             storedLanguage = localStorage.getItem('language');
 
-            // If no language is stored, detect browser language
+            // CodeInsight-AI is Chinese-first. Respect an explicit saved choice,
+            // otherwise use the product default returned by the local daemon.
             if (!storedLanguage) {
-              console.log('No language in localStorage, detecting browser language');
-              storedLanguage = detectBrowserLanguage();
-
-              // Store the detected language
+              console.log('No language in localStorage, using product default');
+              storedLanguage = defaultLanguage || detectBrowserLanguage();
               localStorage.setItem('language', storedLanguage);
             }
           } else {
             console.log('Running on server-side, using default language');
-            storedLanguage = 'en';
+            storedLanguage = 'zh';
           }
 
           console.log('Supported languages loaded, validating language:', storedLanguage);
@@ -143,10 +142,10 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
           }
         } catch (error) {
           console.error('Failed to load language:', error);
-          // Fallback to English
-          console.log('Falling back to English due to error');
-          const enMessages = (await import('../messages/en.json')).default;
-          setMessages(enMessages);
+          console.log('Falling back to Simplified Chinese due to error');
+          const zhMessages = (await import('../messages/zh.json')).default;
+          setLanguageState('zh');
+          setMessages(zhMessages);
         } finally {
           setIsLoading(false);
         }
@@ -187,7 +186,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
       <div className="flex items-center justify-center h-screen bg-gray-100 dark:bg-gray-900">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
-          <p className="text-gray-600 dark:text-gray-400">Loading...</p>
+          <p className="text-gray-600 dark:text-gray-400">正在加载 CodeInsight-AI...</p>
         </div>
       </div>
     );

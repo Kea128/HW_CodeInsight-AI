@@ -1,7 +1,7 @@
 {
   "common": {
-    "appName": "DeepWiki-Open",
-    "tagline": "AI-powered documentation",
+    "appName": "CodeInsight-AI",
+    "tagline": "Continuous code understanding with verifiable documentation",
     "generateWiki": "Generate Wiki",
     "processing": "Processing...",
     "error": "Error",
@@ -125,7 +125,8 @@
     "askAboutRepo": "Ask questions about this repository"
   },
   "nav": {
-    "wikiProjects": "Wiki Projects"
+    "wikiProjects": "Projects",
+    "modelSettings": "Models & Strategy"
   },
   "projects": {
     "title": "Processed Wiki Projects",

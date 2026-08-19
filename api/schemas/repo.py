@@ -14,6 +14,10 @@ class WikiTaskRequest(RepoRequestBase):
     owner: str
     repo: str
     comprehensive: bool = Field(True, description="Comprehensive vs concise wiki")
+    force: bool = Field(
+        False,
+        description="Rebuild the index and wiki even when a cache already exists",
+    )
 
     @property
     def repo_key(self) -> str:
@@ -25,11 +29,18 @@ class TaskStatus(str, Enum):
     INDEXING = "indexing"
     DETERMINING_STRUCTURE = "determining_structure"
     GENERATING = "generating"
+    PAUSED = "paused"
+    WAITING = "waiting"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
     def is_terminal(self):
-        return self in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+        return self in (
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        )
 
 
 class WikiTaskSubmitResult(BaseModel):

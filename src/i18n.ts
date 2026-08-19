@@ -5,7 +5,7 @@ export const locales = ['en', 'ja', 'zh', 'zh-tw', 'es', 'kr', 'vi', 'pt-br', 'f
 
 export default getRequestConfig(async ({ locale }) => {
   // Use a default locale if the requested one isn't supported
-  const safeLocale = locales.includes(locale as string) ? locale : 'en';
+  const safeLocale = locales.includes(locale as string) ? locale : 'zh';
 
   return {
     locale: safeLocale as string,

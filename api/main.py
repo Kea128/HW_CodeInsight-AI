@@ -12,7 +12,8 @@ load_dotenv()
 # ruff: noqa: E402
 
 from api.logger import get_logger, setup_logging
-from api.routers import auth, chat, codemap, repo, system, wiki
+from api.routers import auth, chat, codemap, continuous, repo, system, wiki
+from api.services.wiki import generate_repo_wiki, registry
 
 # Configure logging
 setup_logging()
@@ -65,11 +66,30 @@ for module in (
     system,
     auth,
     repo,
+    continuous,
     wiki,
     chat,
     codemap,
 ):
     app.include_router(module.router)
+
+
+@app.on_event("startup")
+async def recover_persistent_tasks():
+    """Resume unfinished work after a daemon or machine restart."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    recovered = await registry.recover(generate_repo_wiki)
+    continuous.manager.start()
+    if recovered:
+        logger.info("Recovered %d persistent wiki task(s)", recovered)
+
+
+@app.on_event("shutdown")
+async def stop_background_services():
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    await continuous.manager.stop()
 
 
 @app.get("/")

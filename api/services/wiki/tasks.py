@@ -43,6 +43,7 @@ from api.services.wiki.prompts import (
     build_page_prompt,
     build_structure_prompt,
 )
+from api.services.wiki.store import WikiTaskStore
 
 from api.logger import get_logger
 
@@ -71,7 +72,7 @@ WIKI_TASK_TTL_SECONDS = _env_int("DEEPWIKI_WIKI_TASK_TTL_SECONDS", 300)
 
 
 class WikiTask(BaseModel):
-    """In-memory runtime state for one repo's generation task."""
+    """Runtime state mirrored to SQLite at every recoverable checkpoint."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -81,8 +82,14 @@ class WikiTask(BaseModel):
     current_page_ids: list[str] = Field(default_factory=list)
     wiki_structure: WikiStructureModel | None = None
     default_branch: str = "main"  # set by determine_structure; used for file URLs
+    generated_pages: dict[str, WikiPage] = Field(default_factory=dict)
     error: str | None = None
     submitted_at: int = Field(default_factory=lambda: int(time.time() * 1000))
+    pause_requested: bool = False
+    cancel_requested: bool = False
+    persist_callback: Callable[["WikiTask", str], None] | None = Field(
+        default=None, exclude=True, repr=False
+    )
     task: asyncio.Task | None = Field(default=None, repr=False)
 
     @computed_field
@@ -98,9 +105,68 @@ class WikiTask(BaseModel):
             request=request,
         )
 
+    @classmethod
+    def from_snapshot(cls, snapshot: dict[str, Any]) -> "WikiTask":
+        structure = snapshot.get("wiki_structure")
+        generated = snapshot.get("generated_pages", {})
+        return cls(
+            request=WikiTaskRequest.model_validate(snapshot["request"]),
+            status=TaskStatus(snapshot["status"]),
+            pages_done=snapshot.get("pages_done", len(generated)),
+            current_page_ids=[],
+            wiki_structure=WikiStructureModel.model_validate(structure)
+            if structure
+            else None,
+            default_branch=snapshot.get("default_branch", "main"),
+            generated_pages={
+                page_id: WikiPage.model_validate(page)
+                for page_id, page in generated.items()
+            },
+            error=snapshot.get("error"),
+            submitted_at=snapshot["submitted_at"],
+            pause_requested=snapshot.get("pause_requested", False),
+            cancel_requested=snapshot.get("cancel_requested", False),
+        )
+
     @property
     def repo_key(self) -> str:
         return self.request.repo_key
+
+    def snapshot(self) -> dict[str, Any]:
+        # Access tokens are runtime secrets and must never be persisted.
+        return {
+            "id": self.repo_key,
+            "request": self.request.model_dump(exclude={"token"}),
+            "status": self.status.value,
+            "pages_done": self.pages_done,
+            "current_page_ids": self.current_page_ids,
+            "wiki_structure": self.wiki_structure.model_dump()
+            if self.wiki_structure
+            else None,
+            "generated_pages": {
+                page_id: page.model_dump()
+                for page_id, page in self.generated_pages.items()
+            },
+            "default_branch": self.default_branch,
+            "error": self.error,
+            "submitted_at": self.submitted_at,
+            "pause_requested": self.pause_requested,
+            "cancel_requested": self.cancel_requested,
+        }
+
+    def persist(self, event_type: str = "checkpoint") -> None:
+        if self.persist_callback:
+            self.persist_callback(self, event_type)
+
+    async def control_point(self) -> None:
+        if self.cancel_requested:
+            raise asyncio.CancelledError
+        while self.pause_requested:
+            self.status = TaskStatus.PAUSED
+            self.persist("paused")
+            await asyncio.sleep(0.2)
+            if self.cancel_requested:
+                raise asyncio.CancelledError
 
     def to_status(self) -> WikiTaskStatus:
         """Client-facing status (SPEC.md §9). Never exposes the token."""
@@ -142,16 +208,33 @@ class TaskRegistry:
     _lock: asyncio.Lock
     _semaphore: asyncio.Semaphore
 
-    def __init__(self, max_concurrent: int = MAX_CONCURRENT_WIKI_TASKS):
+    def __init__(
+        self,
+        max_concurrent: int = MAX_CONCURRENT_WIKI_TASKS,
+        store: WikiTaskStore | None = None,
+    ):
         self._tasks = {}
         self._lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._store = store
+        self._runner: Callable[[WikiTask], Coroutine[Any, Any, Any]] | None = None
+
+    def _persist(self, task: WikiTask, event_type: str = "checkpoint") -> None:
+        if self._store:
+            self._store.save(task.snapshot(), event_type)
+
+    def _attach(self, task: WikiTask) -> WikiTask:
+        task.persist_callback = self._persist
+        return task
 
     def get(self, id: str) -> WikiTask | None:
         return self._tasks.get(id)
 
     def active(self) -> list[WikiTask]:
         return [w for w in self._tasks.values() if not w.status.is_terminal()]
+
+    def all(self) -> list[WikiTask]:
+        return list(self._tasks.values())
 
     async def remove(self, id: str) -> WikiTask | None:
         async with self._lock:
@@ -161,8 +244,9 @@ class TaskRegistry:
     async def submit(
         self,
         task: WikiTask,
-        async_func: Callable[[WikiTask], Coroutine[Any, Any, bool]],
+        async_func: Callable[[WikiTask], Coroutine[Any, Any, Any]],
     ) -> WikiTaskSubmitResult:
+        self._runner = async_func
         key = task.repo_key
         async with self._lock:
             exist_task = self.get(key)
@@ -173,7 +257,7 @@ class TaskRegistry:
                     joined=True,
                 )
 
-            if wiki_cache_exists(
+            if not task.request.force and wiki_cache_exists(
                 owner=task.request.owner,
                 repo=task.request.repo,
                 repo_type=task.request.type,
@@ -185,19 +269,93 @@ class TaskRegistry:
                     from_cache=True,
                 )
 
+            self._attach(task)
+            task.persist("submitted")
             task.task = asyncio.create_task(self._run(task, async_func))
             self._tasks[key] = task
             return WikiTaskSubmitResult(task_id=key, status=task.status, created=True)
 
     async def _run(
-        self, task: WikiTask, func: Callable[[WikiTask], Coroutine[Any, Any, bool]]
+        self, task: WikiTask, func: Callable[[WikiTask], Coroutine[Any, Any, Any]]
     ) -> None:
         async with self._semaphore:
             await func(task)
 
         self._schedule_remove(task)
 
+    async def recover(
+        self, async_func: Callable[[WikiTask], Coroutine[Any, Any, Any]]
+    ) -> int:
+        """Reload task history and resume unfinished work from its last checkpoint."""
+        self._runner = async_func
+        if not self._store:
+            return 0
+        recovered = 0
+        async with self._lock:
+            for snapshot in self._store.list_all():
+                key = snapshot["id"]
+                if key in self._tasks:
+                    continue
+                task = self._attach(WikiTask.from_snapshot(snapshot))
+                # A process can die while IDs are marked in-flight. They are safe
+                # to retry because only completed pages are checkpointed.
+                task.current_page_ids = []
+                if task.pause_requested and not task.status.is_terminal():
+                    task.status = TaskStatus.PAUSED
+                if (
+                    not task.status.is_terminal()
+                    and task.status != TaskStatus.PAUSED
+                    and not task.pause_requested
+                ):
+                    task.status = TaskStatus.PENDING
+                    task.task = asyncio.create_task(self._run(task, async_func))
+                self._tasks[key] = task
+                task.persist("recovered")
+                recovered += 1
+        return recovered
+
+    async def pause(self, task_id: str) -> WikiTask | None:
+        async with self._lock:
+            task = self.get(task_id)
+            if not task or task.status.is_terminal():
+                return task
+            task.pause_requested = True
+            task.status = TaskStatus.PAUSED
+            task.persist("pause_requested")
+            return task
+
+    async def resume(self, task_id: str) -> WikiTask | None:
+        async with self._lock:
+            task = self.get(task_id)
+            if not task or task.status.is_terminal():
+                return task
+            task.pause_requested = False
+            task.cancel_requested = False
+            task.status = TaskStatus.PENDING
+            if task.task is None or task.task.done():
+                if not self._runner:
+                    raise RuntimeError("Task runner is not initialized")
+                task.task = asyncio.create_task(self._run(task, self._runner))
+            task.persist("resumed")
+            return task
+
+    async def cancel(self, task_id: str) -> WikiTask | None:
+        async with self._lock:
+            task = self.get(task_id)
+            if not task or task.status.is_terminal():
+                return task
+            task.cancel_requested = True
+            task.pause_requested = False
+            task.status = TaskStatus.CANCELLED
+            task.current_page_ids = []
+            task.persist("cancelled")
+            return task
+
     def _schedule_remove(self, task: WikiTask) -> None:
+        if self._store:
+            # Persistent tasks remain queryable after completion and restart.
+            return
+
         async def remove() -> None:
             await asyncio.sleep(WIKI_TASK_TTL_SECONDS)
             if self.get(task.repo_key) is task and task.status.is_terminal():
@@ -206,36 +364,60 @@ class TaskRegistry:
         asyncio.create_task(remove())
 
 
-registry = TaskRegistry()
+registry = TaskRegistry(store=WikiTaskStore())
 
 
 async def generate_repo_wiki(task: WikiTask) -> None:
     """Drive one task through the state machine (SPEC.md §7)."""
     r = task.request
     try:
+        await task.control_point()
         repo = Repo(r.repo_url, r.type, access_token=r.token)
 
         # Req 1.1: build the index only if it does not already exist.
-        if not repo_index_exist(repo):
+        if r.force or not repo_index_exist(repo):
             task.status = TaskStatus.INDEXING
+            task.persist("indexing")
             logger.info("Indexing %s", task.repo_key)
             await prepare_repo_index(r)
+            await task.control_point()
 
-        # Req 1.2 + no-persistence: index present -> (re)generate the whole wiki.
-        task.status = TaskStatus.DETERMINING_STRUCTURE
-        logger.info("Determining structure for %s", task.repo_key)
-        structure = await _determine_structure(task)
-        task.wiki_structure = structure
+        structure = task.wiki_structure
+        if structure is None:
+            task.status = TaskStatus.DETERMINING_STRUCTURE
+            task.persist("determining_structure")
+            logger.info("Determining structure for %s", task.repo_key)
+            structure = await _determine_structure(task)
+            task.wiki_structure = structure
+            task.persist("structure_ready")
+        await task.control_point()
 
         task.status = TaskStatus.GENERATING
+        task.persist("generating")
         pages = await _generate_pages(task, structure)
 
+        await task.control_point()
         await _save(task, pages)
         task.status = TaskStatus.COMPLETED
+        task.current_page_ids = []
+        task.persist("completed")
         logger.info("Wiki task completed for %s", task.repo_key)
+    except asyncio.CancelledError:
+        task.status = (
+            TaskStatus.CANCELLED if task.cancel_requested else TaskStatus.PENDING
+        )
+        task.current_page_ids = []
+        task.persist("cancelled" if task.cancel_requested else "interrupted")
+        logger.info(
+            "Wiki task %s for %s",
+            "cancelled" if task.cancel_requested else "interrupted",
+            task.repo_key,
+        )
     except Exception as e:
         task.status = TaskStatus.FAILED
         task.error = str(e)
+        task.current_page_ids = []
+        task.persist("failed")
         logger.exception("Wiki task failed for %s", task.repo_key)
 
 
@@ -294,11 +476,16 @@ async def _generate_pages(
     whole task (SPEC.md §7.1), matching the current frontend behavior.
     """
     sema = asyncio.Semaphore(max(1, WIKI_PAGE_CONCURRENCY))
-    pages: dict[str, WikiPage] = {}
+    pages = task.generated_pages
 
     async def one(page: WikiPage) -> None:
+        if page.id in pages:
+            return
         async with sema:
+            await task.control_point()
+            task.status = TaskStatus.GENERATING
             task.current_page_ids.append(page.id)
+            task.persist("page_started")
             try:
                 pages[page.id] = await _generate_page_with_retry(task, page)
             finally:
@@ -306,7 +493,9 @@ async def _generate_pages(
                     task.current_page_ids.remove(page.id)
                 except ValueError:
                     pass
-                task.pages_done += 1
+                if page.id in pages:
+                    task.pages_done = len(pages)
+                task.persist("page_completed")
 
     await asyncio.gather(*(one(page) for page in structure.pages))
     return pages
