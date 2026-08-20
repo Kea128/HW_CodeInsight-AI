@@ -1,6 +1,6 @@
 {
   "name": "codeinsight-ai",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Local-first continuous AI code understanding for desktop and VS Code.",
   "scripts": {
