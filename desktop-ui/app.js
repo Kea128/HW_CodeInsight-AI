@@ -1,6 +1,19 @@
 const LOCAL_API = "http://127.0.0.1:8001";
 let apiBase = localStorage.getItem("codeinsight-api-base") || LOCAL_API;
 const terminalStates = new Set(["completed", "failed", "cancelled"]);
+let tasksLoading = false;
+
+function errorMessage(error) {
+  if (typeof error === "string" && error.trim()) return error;
+  if (error?.message) return error.message;
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== "{}") return serialized;
+  } catch {
+    // Ignore serialization errors and use the fallback below.
+  }
+  return "未知错误";
+}
 
 function setEngineStatus(text, kind) {
   const element = document.querySelector("#engine-status");
@@ -9,16 +22,29 @@ function setEngineStatus(text, kind) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(`${apiBase}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || `请求失败 (${response.status})`);
+  const { headers, timeout = 15000, ...requestOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(`${apiBase}${path}`, {
+      ...requestOptions,
+      headers: { "Content-Type": "application/json", ...(headers || {}) },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || `请求失败 (${response.status})`);
+    }
+    if (response.status === 204) return null;
+    return response.json();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`连接分析引擎超时 (${timeout / 1000} 秒)`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  if (response.status === 204) return null;
-  return response.json();
 }
 
 function updateConnectionUi() {
@@ -44,14 +70,20 @@ async function waitForEngine() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
       await api("/");
-      setEngineStatus("本地引擎已就绪", "ready");
+      setEngineStatus(
+        apiBase === LOCAL_API ? "本地引擎已就绪" : "Ubuntu 引擎已连接",
+        "ready",
+      );
       await loadTasks();
       return;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  setEngineStatus("引擎启动失败", "failed");
+  setEngineStatus(
+    apiBase === LOCAL_API ? "本地引擎启动失败" : "SSH 隧道未连接",
+    "failed",
+  );
 }
 
 function addButton(container, label, action, taskId, className = "secondary") {
@@ -66,7 +98,7 @@ function addButton(container, label, action, taskId, className = "secondary") {
       });
       await loadTasks();
     } catch (error) {
-      window.alert(error.message);
+      window.alert(errorMessage(error));
     } finally {
       button.disabled = false;
     }
@@ -105,6 +137,8 @@ function renderTask(task) {
 }
 
 async function loadTasks() {
+  if (tasksLoading) return;
+  tasksLoading = true;
   const list = document.querySelector("#task-list");
   try {
     const tasks = await api("/wiki/tasks");
@@ -118,7 +152,9 @@ async function loadTasks() {
     }
     tasks.forEach((task) => list.append(renderTask(task)));
   } catch (error) {
-    list.textContent = error.message;
+    list.textContent = errorMessage(error);
+  } finally {
+    tasksLoading = false;
   }
 }
 
@@ -151,7 +187,7 @@ document.querySelector("#project-form").addEventListener("submit", async (event)
     await loadTasks();
   } catch (error) {
     message.className = "message error";
-    message.textContent = error.message;
+    message.textContent = errorMessage(error);
   }
 });
 
@@ -178,7 +214,7 @@ document.querySelector("#connection-form").addEventListener("submit", async (eve
     await loadTasks();
   } catch (error) {
     message.className = "message error";
-    message.textContent = error.message;
+    message.textContent = errorMessage(error);
   }
 });
 
@@ -203,7 +239,17 @@ document.querySelector("#update-button").addEventListener("click", async () => {
     }
     window.alert(`版本 ${version} 已安装，请重新启动应用。`);
   } catch (error) {
-    window.alert(`检查更新失败：${error.message}`);
+    const detail = errorMessage(error);
+    const openDownload = window.confirm(
+      `自动更新失败：${detail}\n\n是否在浏览器中打开官方下载页面？`,
+    );
+    if (openDownload) {
+      try {
+        await window.__TAURI__.core.invoke("open_manual_update");
+      } catch (openError) {
+        window.alert(`打开下载页面失败：${errorMessage(openError)}`);
+      }
+    }
   } finally {
     button.disabled = false;
   }

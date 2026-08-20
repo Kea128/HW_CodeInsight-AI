@@ -162,8 +162,11 @@ class WikiTask(BaseModel):
         if self.cancel_requested:
             raise asyncio.CancelledError
         while self.pause_requested:
-            self.status = TaskStatus.PAUSED
-            self.persist("paused")
+            # pause() already checkpoints the transition. Avoid writing another
+            # SQLite event every 200 ms while a task remains paused overnight.
+            if self.status != TaskStatus.PAUSED:
+                self.status = TaskStatus.PAUSED
+                self.persist("paused")
             await asyncio.sleep(0.2)
             if self.cancel_requested:
                 raise asyncio.CancelledError
@@ -278,10 +281,11 @@ class TaskRegistry:
     async def _run(
         self, task: WikiTask, func: Callable[[WikiTask], Coroutine[Any, Any, Any]]
     ) -> None:
-        async with self._semaphore:
-            await func(task)
-
-        self._schedule_remove(task)
+        try:
+            async with self._semaphore:
+                await func(task)
+        finally:
+            self._schedule_remove(task)
 
     async def recover(
         self, async_func: Callable[[WikiTask], Coroutine[Any, Any, Any]]
@@ -349,6 +353,8 @@ class TaskRegistry:
             task.status = TaskStatus.CANCELLED
             task.current_page_ids = []
             task.persist("cancelled")
+            if task.task and not task.task.done():
+                task.task.cancel()
             return task
 
     def _schedule_remove(self, task: WikiTask) -> None:
@@ -426,7 +432,7 @@ async def _save(
     pages: dict[str, WikiPage],
 ) -> None:
     assert task.wiki_structure is not None
-    await save_wiki_cache(
+    saved = await save_wiki_cache(
         owner=task.request.owner,
         repo=task.request.repo,
         repo_type=task.request.type,
@@ -445,6 +451,8 @@ async def _save(
             model=task.request.model,
         ),
     )
+    if not saved:
+        raise RuntimeError("Failed to save generated wiki cache")
 
 
 async def _generate_page_with_retry(task: WikiTask, page: WikiPage) -> WikiPage:

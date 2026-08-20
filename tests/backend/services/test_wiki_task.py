@@ -109,6 +109,28 @@ async def test_submit_joins_active_task(monkeypatch):
     await reg.get(r1.task_id).task
 
 
+async def test_cancel_interrupts_running_task(monkeypatch):
+    reg = TaskRegistry()
+    monkeypatch.setattr(wt, "WIKI_TASK_TTL_SECONDS", 0)
+    monkeypatch.setattr(wt, "wiki_cache_exists", lambda **p: False)
+    started = asyncio.Event()
+
+    async def blocking_run(task):
+        started.set()
+        await asyncio.Event().wait()
+
+    result = await reg.submit(_req(), blocking_run)
+    task = reg.get(result.task_id)
+    await started.wait()
+
+    await reg.cancel(result.task_id)
+
+    with pytest.raises(asyncio.CancelledError):
+        await task.task
+    await asyncio.sleep(0)
+    assert task.status == TaskStatus.CANCELLED
+
+
 async def test_submit_serves_cache(monkeypatch):
     reg = TaskRegistry()
     monkeypatch.setattr(wt, "wiki_cache_exists", lambda **p: True)
@@ -161,6 +183,18 @@ async def test_determine_structure_failure_fails_task(monkeypatch):
 
     assert task.status == TaskStatus.FAILED
     assert "no structure" in (task.error or "")
+
+
+async def test_save_failure_is_not_silently_accepted(monkeypatch):
+    async def fail_save(**_kwargs):
+        return False
+
+    monkeypatch.setattr(wt, "save_wiki_cache", fail_save)
+    task = _req()
+    task.wiki_structure = _structure(1)
+
+    with pytest.raises(RuntimeError, match="Failed to save"):
+        await wt._save(task, {"page-1": task.wiki_structure.pages[0]})
 
 
 # --------------------------------------------------------------------------- #
@@ -264,3 +298,18 @@ async def test_public_dict_hides_token():
     assert "token" not in d
     assert "SECRET" not in str(d)
     assert d["name"] == "o/r" and d["status"] == "pending"
+
+
+async def test_paused_control_point_does_not_repeat_persistence_writes():
+    task = _req()
+    task.status = TaskStatus.PAUSED
+    task.pause_requested = True
+    events = []
+    task.persist_callback = lambda _task, event: events.append(event)
+
+    waiter = asyncio.create_task(task.control_point())
+    await asyncio.sleep(0.45)
+    task.pause_requested = False
+    await waiter
+
+    assert events == []

@@ -29,6 +29,7 @@ IGNORED_DIRS = {
     "out",
     "target",
 }
+HASH_CHUNK_SIZE = 1024 * 1024
 
 
 def _minute_of_day(value: str) -> int:
@@ -65,13 +66,20 @@ def _scan_files(request: WikiTaskRequest) -> dict[str, str]:
         for filename in files:
             path = Path(current_root, filename)
             relative = path.relative_to(root).as_posix()
-            if filename.startswith(".") or _excluded(relative, request):
+            if (
+                filename.startswith(".")
+                or path.is_symlink()
+                or _excluded(relative, request)
+            ):
                 continue
             try:
-                digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            except (OSError, PermissionError):
+                digest = hashlib.sha256()
+                with path.open("rb") as stream:
+                    while chunk := stream.read(HASH_CHUNK_SIZE):
+                        digest.update(chunk)
+            except OSError:
                 continue
-            hashes[relative] = digest
+            hashes[relative] = digest.hexdigest()
     return hashes
 
 
@@ -160,7 +168,12 @@ class ContinuousAnalysisManager:
 
     async def _run(self) -> None:
         while not self._stopping.is_set():
-            await self.scan_once()
+            try:
+                await self.scan_once()
+            except Exception:
+                # One malformed or temporarily inaccessible project must not
+                # permanently stop monitoring every registered repository.
+                logger.exception("Continuous analysis scan failed")
             await asyncio.sleep(2)
 
     async def scan_once(self) -> None:
@@ -170,6 +183,13 @@ class ContinuousAnalysisManager:
                 continue
             elapsed = now_ms - (project.get("last_scan_at") or 0)
             if elapsed < project["poll_seconds"] * 1000:
+                continue
+            last_task = self.registry.get(project.get("last_task_id") or "")
+            if last_task and not last_task.status.is_terminal():
+                # Avoid rescanning and rejoining the same active task every
+                # poll. Changes made meanwhile are detected after it finishes.
+                project["last_scan_at"] = now_ms
+                self.store.save_continuous_project(project)
                 continue
             request = WikiTaskRequest.model_validate(project["request"])
             current = await asyncio.to_thread(_scan_files, request)
