@@ -2,6 +2,8 @@ const LOCAL_API = "http://127.0.0.1:8001";
 let apiBase = localStorage.getItem("codeinsight-api-base") || LOCAL_API;
 const terminalStates = new Set(["completed", "failed", "cancelled"]);
 let tasksLoading = false;
+let modelConfigured = false;
+let modelProvider = localStorage.getItem("codeinsight-model-provider") || "openai";
 
 function errorMessage(error) {
   if (typeof error === "string" && error.trim()) return error;
@@ -40,6 +42,9 @@ async function api(path, options = {}) {
   } catch (error) {
     if (error?.name === "AbortError") {
       throw new Error(`连接分析引擎超时 (${timeout / 1000} 秒)`);
+    }
+    if (error instanceof TypeError) {
+      throw new Error(`无法连接分析引擎 ${apiBase}，请恢复本机引擎后重试`);
     }
     throw error;
   } finally {
@@ -121,6 +126,12 @@ function renderTask(task) {
   bar.style.width = `${Math.min(100, percent)}%`;
   progress.append(bar);
   detail.append(title, status, progress);
+  if (task.error) {
+    const error = document.createElement("p");
+    error.className = "task-error";
+    error.textContent = task.error;
+    detail.append(error);
+  }
 
   const actions = document.createElement("div");
   actions.className = "task-actions";
@@ -158,6 +169,59 @@ async function loadTasks() {
   }
 }
 
+function updateModelForm() {
+  const provider = document.querySelector("#model-provider");
+  const keyLabel = document.querySelector("#api-key-label");
+  provider.value = modelProvider;
+  keyLabel.hidden = modelProvider === "ollama";
+}
+
+async function loadModelSettings() {
+  const status = document.querySelector("#model-status");
+  try {
+    const settings = await api("/desktop/settings");
+    modelProvider = settings.provider;
+    modelConfigured = settings.configured;
+    localStorage.setItem("codeinsight-model-provider", modelProvider);
+    updateModelForm();
+    status.textContent = modelConfigured ? "已配置" : "需要配置";
+    status.className = `badge ${modelConfigured ? "ready" : "failed"}`;
+  } catch (error) {
+    status.textContent = "读取失败";
+    status.className = "badge failed";
+  }
+}
+
+document.querySelector("#model-provider").addEventListener("change", (event) => {
+  modelProvider = event.target.value;
+  updateModelForm();
+});
+
+document.querySelector("#model-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = document.querySelector("#model-message");
+  const apiKey = document.querySelector("#model-api-key").value.trim();
+  try {
+    message.className = "message";
+    message.textContent = "正在保存模型设置…";
+    const settings = await api("/desktop/settings", {
+      method: "POST",
+      body: JSON.stringify({ provider: modelProvider, api_key: apiKey || null }),
+    });
+    if (!settings.configured) {
+      throw new Error(`${modelProvider} 需要有效的 API Key`);
+    }
+    localStorage.setItem("codeinsight-model-provider", modelProvider);
+    message.textContent = "设置已保存，正在重启应用并加载模型配置…";
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!invoke) throw new Error("桌面重启组件不可用，请手动重启软件");
+    setTimeout(() => invoke("restart_app"), 300);
+  } catch (error) {
+    message.className = "message error";
+    message.textContent = errorMessage(error);
+  }
+});
+
 document.querySelector("#project-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = document.querySelector("#form-message");
@@ -181,8 +245,22 @@ document.querySelector("#project-form").addEventListener("submit", async (event)
   };
   try {
     message.className = "message";
+    if (/^[a-zA-Z]:[\\/]/.test(path) && apiBase !== LOCAL_API) {
+      apiBase = LOCAL_API;
+      localStorage.setItem("codeinsight-api-base", apiBase);
+      updateConnectionUi();
+    }
+    await api("/health");
+    if (!modelConfigured) {
+      throw new Error("请先在“AI 模型设置”中配置模型服务");
+    }
+    body.task.provider = modelProvider;
     message.textContent = "正在建立文件快照…";
-    await api("/continuous/projects", { method: "POST", body: JSON.stringify(body) });
+    await api("/continuous/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+      timeout: 120000,
+    });
     message.textContent = "项目已加入持续分析。";
     await loadTasks();
   } catch (error) {
@@ -268,5 +346,7 @@ document.querySelector("#update-button").addEventListener("click", async () => {
 });
 
 updateConnectionUi();
+updateModelForm();
 waitForEngine();
+loadModelSettings();
 setInterval(loadTasks, 3000);

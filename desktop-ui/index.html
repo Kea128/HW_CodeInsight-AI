@@ -55,6 +55,32 @@
       </section>
 
       <section class="panel">
+        <div class="section-heading">
+          <h2>AI 模型设置</h2>
+          <span id="model-status" class="badge waiting">未检查</span>
+        </div>
+        <p class="hint">代码只发送给你选择的模型服务。OpenAI、Google 需要 API Key；Ollama 使用本机服务且无需 Key。</p>
+        <form id="model-form">
+          <div class="row">
+            <label>
+              模型服务
+              <select id="model-provider">
+                <option value="openai">OpenAI</option>
+                <option value="google">Google Gemini</option>
+                <option value="ollama">本机 Ollama</option>
+              </select>
+            </label>
+            <label id="api-key-label">
+              API Key
+              <input id="model-api-key" type="password" autocomplete="off" placeholder="输入后保存在本机" />
+            </label>
+          </div>
+          <button type="submit">保存并重启引擎</button>
+        </form>
+        <p id="model-message" class="message"></p>
+      </section>
+
+      <section class="panel">
         <h2>添加本地项目</h2>
         <form id="project-form">
           <label>

@@ -48,6 +48,13 @@ os.environ.setdefault("NODE_ENV", "production")
 _configure_git()
 
 try:
+    from api.desktop_settings import apply_desktop_settings
+
+    desktop_settings = apply_desktop_settings()
+    _log(
+        "desktop model provider: "
+        f"{desktop_settings.get('provider', 'openai')}"
+    )
     import uvicorn
 
     _log("uvicorn imported")

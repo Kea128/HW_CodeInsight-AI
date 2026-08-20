@@ -184,6 +184,11 @@ fn open_manual_update(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| describe_error("无法打开下载页面", error))
 }
 
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.request_restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -193,7 +198,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_update,
             install_update,
-            open_manual_update
+            open_manual_update,
+            restart_app
         ])
         .setup(|app| {
             app.manage(PendingUpdate(Mutex::new(None)));

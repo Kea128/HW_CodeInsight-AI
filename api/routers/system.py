@@ -1,14 +1,40 @@
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from api.config import configs
+from api.desktop_settings import load_desktop_settings, save_desktop_settings
 from api.logger import get_logger
 from api.schemas import Model, ModelConfig, Provider
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["system"])
+
+
+class DesktopSettingsRequest(BaseModel):
+    provider: Literal["openai", "google", "ollama"]
+    api_key: str | None = None
+
+
+class DesktopSettingsStatus(BaseModel):
+    provider: str
+    configured: bool
+    restart_required: bool = False
+
+
+def _desktop_settings_status(
+    data: dict[str, str], *, restart_required: bool = False
+) -> DesktopSettingsStatus:
+    provider = data.get("provider", "openai")
+    configured = provider == "ollama" or bool(data.get(f"{provider}_api_key"))
+    return DesktopSettingsStatus(
+        provider=provider,
+        configured=configured,
+        restart_required=restart_required,
+    )
 
 
 @router.get("/health")
@@ -19,6 +45,17 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "codeinsight-engine",
     }
+
+
+@router.get("/desktop/settings", response_model=DesktopSettingsStatus)
+async def get_desktop_settings():
+    return _desktop_settings_status(load_desktop_settings())
+
+
+@router.post("/desktop/settings", response_model=DesktopSettingsStatus)
+async def update_desktop_settings(request: DesktopSettingsRequest):
+    data = save_desktop_settings(request.provider, request.api_key)
+    return _desktop_settings_status(data, restart_required=True)
 
 
 @router.get("/lang/config")
