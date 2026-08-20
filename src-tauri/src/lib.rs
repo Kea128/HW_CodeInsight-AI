@@ -43,7 +43,7 @@ pub fn run() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
             if let Ok(mut process) = app_handle.state::<DaemonProcess>().0.lock() {
-                if let Some(child) = process.as_mut() {
+                if let Some(child) = process.take() {
                     let _ = child.kill();
                 }
             }
