@@ -34,9 +34,33 @@ jobs:
 
       - name: Install and freeze the analysis daemon
         run: |
-          python -m pip install poetry pyinstaller
+          python -m pip install poetry
           poetry install -C api --no-interaction
-          poetry -C api run pyinstaller --noconfirm --clean --onefile --windowed --name codeinsight-daemon --paths .. --add-data "config;api/config" daemon.py
+          poetry -C api run python -m pip install pyinstaller
+          poetry -C api run python -m PyInstaller --noconfirm --clean --onefile --windowed --name codeinsight-daemon --paths .. --add-data "config;api/config" daemon.py
+          $daemon = Start-Process api/dist/codeinsight-daemon.exe -PassThru
+          $ready = $false
+          try {
+            for ($attempt = 0; $attempt -lt 90; $attempt++) {
+              if ($daemon.HasExited) {
+                throw "Frozen analysis daemon exited before becoming healthy."
+              }
+              try {
+                Invoke-WebRequest -UseBasicParsing -Uri http://127.0.0.1:8001/health -TimeoutSec 2 | Out-Null
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+          } finally {
+            if (-not $daemon.HasExited) {
+              Stop-Process -Id $daemon.Id -Force
+            }
+          }
+          if (-not $ready) {
+            throw "Frozen analysis daemon did not pass its health check."
+          }
           New-Item -ItemType Directory -Force src-tauri/binaries
           Copy-Item api/dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
 
