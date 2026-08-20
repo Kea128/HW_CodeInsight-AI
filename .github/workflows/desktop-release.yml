@@ -34,10 +34,10 @@ jobs:
       - name: Install and freeze the analysis daemon
         run: |
           python -m pip install poetry pyinstaller
-          poetry install --no-interaction
-          poetry run pyinstaller --noconfirm --clean --onefile --name codeinsight-daemon --paths . api/daemon.py
+          poetry install -C api --no-interaction
+          poetry -C api run pyinstaller --noconfirm --clean --onefile --name codeinsight-daemon --paths .. --add-data "config;api/config" daemon.py
           New-Item -ItemType Directory -Force src-tauri/binaries
-          Copy-Item dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
+          Copy-Item api/dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
 
       - name: Configure signed update channel
         env:
@@ -62,5 +62,5 @@ jobs:
           tagName: desktop-v__VERSION__
           releaseName: "CodeInsight-AI Desktop v__VERSION__"
           releaseBody: "Windows desktop preview with persistent tasks, recovery, file watching, night analysis, and signed online updates."
-          releaseDraft: true
-          prerelease: true
+          releaseDraft: false
+          prerelease: false
