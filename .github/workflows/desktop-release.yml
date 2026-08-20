@@ -30,6 +30,7 @@ jobs:
         run: |
           npm ci
           npm install --no-save @tauri-apps/cli@latest
+          npm run tauri icon desktop-ui/icon.svg
 
       - name: Install and freeze the analysis daemon
         run: |
