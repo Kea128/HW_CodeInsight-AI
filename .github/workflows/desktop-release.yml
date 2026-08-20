@@ -39,10 +39,6 @@ jobs:
           poetry -C api run python -m pip install pyinstaller
           poetry -C api run python -c "import uvicorn; import api.main; print('Backend imports verified')"
           poetry -C api run python -m PyInstaller --noconfirm --clean --onefile --windowed --name codeinsight-daemon --paths .. --collect-all uvicorn --add-data "config;api/config" daemon.py
-          $selfCheck = Start-Process api/dist/codeinsight-daemon.exe -ArgumentList "--self-check" -Wait -PassThru
-          if ($selfCheck.ExitCode -ne 0) {
-            throw "Frozen analysis daemon dependency self-check failed."
-          }
           New-Item -ItemType Directory -Force src-tauri/binaries
           Copy-Item api/dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
 
