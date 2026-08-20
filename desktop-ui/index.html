@@ -27,6 +27,34 @@
       </section>
 
       <section class="panel">
+        <div class="section-heading">
+          <h2>分析引擎连接</h2>
+          <span id="connection-kind" class="badge ready">本机</span>
+        </div>
+        <p class="hint">远程 Ubuntu 建议通过 SSH 隧道连接，不要将分析 API 直接暴露到公网。</p>
+        <form id="connection-form">
+          <label>
+            引擎地址
+            <input id="engine-url" type="url" value="http://127.0.0.1:8001" required />
+          </label>
+          <div class="connection-actions">
+            <button type="submit">连接引擎</button>
+            <button id="use-local-button" type="button" class="secondary">恢复本机引擎</button>
+          </div>
+        </form>
+        <details>
+          <summary>如何连接远程 Ubuntu？</summary>
+          <ol>
+            <li>在 Ubuntu 上启动 CodeInsight 引擎，并保持监听 <code>127.0.0.1:8001</code>。</li>
+            <li>在 Windows 执行：<code>ssh -N -L 18001:127.0.0.1:8001 user@ubuntu-host</code></li>
+            <li>将上方引擎地址改为 <code>http://127.0.0.1:18001</code>，再点击连接。</li>
+            <li>添加项目时填写 Ubuntu 上的绝对路径，例如 <code>/srv/code/my-project</code>。</li>
+          </ol>
+        </details>
+        <p id="connection-message" class="message"></p>
+      </section>
+
+      <section class="panel">
         <h2>添加本地项目</h2>
         <form id="project-form">
           <label>

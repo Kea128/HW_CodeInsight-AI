@@ -19,8 +19,14 @@ h2 { font-size: 18px; }
 .hero p { max-width: 720px; margin-bottom: 0; color: #b7c7dc; line-height: 1.7; }
 .panel { margin: 18px 0; padding: 24px; border: 1px solid #232d3d; border-radius: 16px; background: rgba(16, 21, 31, .92); }
 .section-heading { justify-content: space-between; }
+.hint { color: #98a9bf; font-size: 13px; line-height: 1.6; }
 form, label { display: grid; gap: 8px; }
 form { gap: 16px; }
+.connection-actions { display: flex; gap: 10px; }
+details { margin-top: 16px; color: #aebdd0; font-size: 13px; }
+summary { cursor: pointer; color: #70d8ff; }
+details li { margin: 8px 0; line-height: 1.55; }
+code { border-radius: 5px; padding: 2px 5px; background: #09101a; color: #dcecff; }
 .row > label { flex: 1; }
 input { width: 100%; border: 1px solid #34435a; border-radius: 9px; padding: 11px 12px; color: #edf3ff; background: #0b1019; outline: none; }
 input:focus { border-color: #57c8ff; box-shadow: 0 0 0 3px rgba(87, 200, 255, .12); }

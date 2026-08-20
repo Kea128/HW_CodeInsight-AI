@@ -1,4 +1,5 @@
-const API = "http://127.0.0.1:8001";
+const LOCAL_API = "http://127.0.0.1:8001";
+let apiBase = localStorage.getItem("codeinsight-api-base") || LOCAL_API;
 const terminalStates = new Set(["completed", "failed", "cancelled"]);
 
 function setEngineStatus(text, kind) {
@@ -8,7 +9,7 @@ function setEngineStatus(text, kind) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(`${API}${path}`, {
+  const response = await fetch(`${apiBase}${path}`, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
@@ -18,6 +19,25 @@ async function api(path, options = {}) {
   }
   if (response.status === 204) return null;
   return response.json();
+}
+
+function updateConnectionUi() {
+  const remote = apiBase !== LOCAL_API;
+  document.querySelector("#engine-url").value = apiBase;
+  const kind = document.querySelector("#connection-kind");
+  kind.textContent = remote ? "Ubuntu（SSH 隧道）" : "本机";
+  kind.className = "badge ready";
+}
+
+function normalizeLoopbackUrl(value) {
+  const url = new URL(value);
+  if (!["127.0.0.1", "localhost", "::1"].includes(url.hostname)) {
+    throw new Error("为保护源码，远程引擎必须通过 SSH 隧道连接到本机地址");
+  }
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("引擎地址仅支持 HTTP 或 HTTPS");
+  }
+  return url.origin;
 }
 
 async function waitForEngine() {
@@ -135,6 +155,40 @@ document.querySelector("#project-form").addEventListener("submit", async (event)
   }
 });
 
+document.querySelector("#connection-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = document.querySelector("#connection-message");
+  try {
+    const nextBase = normalizeLoopbackUrl(
+      document.querySelector("#engine-url").value.trim(),
+    );
+    const previousBase = apiBase;
+    apiBase = nextBase;
+    try {
+      await api("/health");
+    } catch (error) {
+      apiBase = previousBase;
+      throw error;
+    }
+    localStorage.setItem("codeinsight-api-base", apiBase);
+    updateConnectionUi();
+    setEngineStatus("分析引擎已连接", "ready");
+    message.className = "message";
+    message.textContent = apiBase === LOCAL_API ? "已连接本机引擎。" : "已通过 SSH 隧道连接 Ubuntu 引擎。";
+    await loadTasks();
+  } catch (error) {
+    message.className = "message error";
+    message.textContent = error.message;
+  }
+});
+
+document.querySelector("#use-local-button").addEventListener("click", async () => {
+  apiBase = LOCAL_API;
+  localStorage.setItem("codeinsight-api-base", apiBase);
+  updateConnectionUi();
+  await waitForEngine();
+});
+
 document.querySelector("#refresh-button").addEventListener("click", loadTasks);
 document.querySelector("#update-button").addEventListener("click", async () => {
   const button = document.querySelector("#update-button");
@@ -155,5 +209,6 @@ document.querySelector("#update-button").addEventListener("click", async () => {
   }
 });
 
+updateConnectionUi();
 waitForEngine();
 setInterval(loadTasks, 3000);
