@@ -1,5 +1,9 @@
+use base64::Engine;
+use minisign_verify::{PublicKey, Signature};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
@@ -8,6 +12,7 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const RELEASES_URL: &str = "https://github.com/Kea128/HW_CodeInsight-AI/releases/latest";
+const UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5RkM2RUU5Mzc4MkRCOQpSV1M1TFhpVDdzYWZDOGxXczNuWTB3WjB6R0tWb1pmWnF3RXAwcnZCVFY1NFBjV2hORE5mYnhwNAo=";
 const UPDATE_ATTEMPTS: usize = 3;
 const UPDATE_RETRY_DELAY: Duration = Duration::from_secs(2);
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -17,6 +22,59 @@ struct PendingUpdate(Mutex<Option<Update>>);
 
 fn describe_error(context: &str, error: impl std::fmt::Display) -> String {
     format!("{context}: {error}")
+}
+
+fn verify_update_signature(data: &[u8], encoded_signature: &str) -> Result<(), String> {
+    let decode = |value: &str| -> Result<String, String> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .map_err(|error| describe_error("更新签名 Base64 无效", error))?;
+        String::from_utf8(bytes).map_err(|error| describe_error("更新签名文本无效", error))
+    };
+    let public_key = PublicKey::decode(&decode(UPDATE_PUBLIC_KEY)?)
+        .map_err(|error| describe_error("更新公钥无效", error))?;
+    let signature = Signature::decode(&decode(encoded_signature)?)
+        .map_err(|error| describe_error("更新包签名无效", error))?;
+    public_key
+        .verify(data, &signature, true)
+        .map_err(|error| describe_error("更新包签名校验失败", error))
+}
+
+async fn download_with_windows(update: &Update) -> Result<Vec<u8>, String> {
+    let url = update.download_url.to_string();
+    let signature = update.signature.clone();
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "codeinsight-update-{}-{nonce}.bin",
+            std::process::id()
+        ));
+        let path_string = path.to_string_lossy().into_owned();
+        let script = "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri $env:CODEINSIGHT_UPDATE_URL -OutFile $env:CODEINSIGHT_UPDATE_PATH";
+        let output = Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+            .arg(script)
+            .env("CODEINSIGHT_UPDATE_URL", &url)
+            .env("CODEINSIGHT_UPDATE_PATH", &path_string)
+            .output()
+            .map_err(|error| describe_error("无法启动 Windows 下载服务", error))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("Windows 下载服务失败: {}", detail.trim()));
+        }
+        let result = std::fs::read(&path)
+            .map_err(|error| describe_error("无法读取已下载更新包", error));
+        let _ = std::fs::remove_file(&path);
+        result
+    })
+    .await
+    .map_err(|error| describe_error("Windows 下载任务异常", error))??;
+    verify_update_signature(&bytes, &signature)?;
+    Ok(bytes)
 }
 
 #[tauri::command]
@@ -104,31 +162,19 @@ async fn install_update(app: tauri::AppHandle) -> Result<Option<String>, String>
         return Ok(None);
     };
     let version = update.version.to_string();
-    let mut download_error = None;
-    for attempt in 1..=UPDATE_ATTEMPTS {
-        match update.download(|_, _| {}, || {}).await {
-            Ok(bytes) => {
-                update
-                    .install(bytes)
-                    .map_err(|error| describe_error("更新包安装失败", error))?;
-                return Ok(Some(version));
-            }
-            Err(error) => download_error = Some(error),
-        }
-        if attempt < UPDATE_ATTEMPTS {
-            let _ = tauri::async_runtime::spawn_blocking(|| {
-                std::thread::sleep(UPDATE_RETRY_DELAY);
-            })
-            .await;
-        }
-    }
-    match download_error {
-        Some(error) => Err(describe_error(
-            "重试 3 次后仍无法下载更新包",
-            error,
-        )),
-        None => Err("更新包下载未启动".to_string()),
-    }
+    let bytes = match tokio::time::timeout(
+        UPDATE_TIMEOUT,
+        update.download(|_, _| {}, || {}),
+    )
+    .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) | Err(_) => download_with_windows(&update).await?,
+    };
+    update
+        .install(bytes)
+        .map_err(|error| describe_error("更新包安装失败", error))?;
+    Ok(Some(version))
 }
 
 #[tauri::command]
