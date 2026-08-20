@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
@@ -7,6 +8,9 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_updater::UpdaterExt;
 
 const RELEASES_URL: &str = "https://github.com/Kea128/HW_CodeInsight-AI/releases/latest";
+const UPDATE_ATTEMPTS: usize = 3;
+const UPDATE_RETRY_DELAY: Duration = Duration::from_secs(2);
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct DaemonProcess(Mutex<Option<CommandChild>>);
 
@@ -16,26 +20,64 @@ fn describe_error(context: &str, error: impl std::fmt::Display) -> String {
 
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let updater = app
-        .updater()
-        .map_err(|error| describe_error("更新组件初始化失败", error))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|error| describe_error("无法连接更新服务器", error))?;
-    Ok(update.map(|release| release.version.to_string()))
+    let mut last_error = None;
+    for attempt in 1..=UPDATE_ATTEMPTS {
+        let updater = app
+            .updater_builder()
+            .timeout(UPDATE_TIMEOUT)
+            .build()
+            .map_err(|error| describe_error("更新组件初始化失败", error))?;
+        match updater.check().await {
+            Ok(update) => return Ok(update.map(|release| release.version.to_string())),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt < UPDATE_ATTEMPTS {
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                std::thread::sleep(UPDATE_RETRY_DELAY);
+            })
+            .await;
+        }
+    }
+    match last_error {
+        Some(error) => Err(describe_error(
+            "重试 3 次后仍无法连接更新服务器",
+            error,
+        )),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let updater = app
-        .updater()
-        .map_err(|error| describe_error("更新组件初始化失败", error))?;
-    let Some(update) = updater
-        .check()
-        .await
-        .map_err(|error| describe_error("无法连接更新服务器", error))?
-    else {
+    let mut update = None;
+    let mut last_error = None;
+    for attempt in 1..=UPDATE_ATTEMPTS {
+        let updater = app
+            .updater_builder()
+            .timeout(UPDATE_TIMEOUT)
+            .build()
+            .map_err(|error| describe_error("更新组件初始化失败", error))?;
+        match updater.check().await {
+            Ok(result) => {
+                update = result;
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+        if attempt < UPDATE_ATTEMPTS {
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                std::thread::sleep(UPDATE_RETRY_DELAY);
+            })
+            .await;
+        }
+    }
+    let Some(update) = update else {
+        if let Some(error) = last_error {
+            return Err(describe_error(
+                "重试 3 次后仍无法连接更新服务器",
+                error,
+            ));
+        }
         return Ok(None);
     };
     let version = update.version.to_string();
