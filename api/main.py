@@ -92,6 +92,12 @@ async def stop_background_services():
     await continuous.manager.stop()
 
 
+@app.get("/health")
+async def health():
+    """Lightweight readiness endpoint for desktop and remote-engine clients."""
+    return {"status": "ok"}
+
+
 @app.get("/")
 async def root():
     """Root endpoint to check if the API is running and list available endpoints dynamically."""
