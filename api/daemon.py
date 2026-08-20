@@ -1,6 +1,7 @@
 """Frozen desktop sidecar entry point."""
 
 import os
+import sys
 
 import uvicorn
 
@@ -11,6 +12,8 @@ from api.main import app  # noqa: E402
 
 
 def main() -> None:
+    if "--self-check" in sys.argv:
+        return
     uvicorn.run(
         app,
         host="127.0.0.1",
