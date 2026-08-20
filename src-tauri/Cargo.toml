@@ -1,6 +1,6 @@
 [package]
 name = "codeinsight-ai"
-version = "0.1.15"
+version = "0.1.16"
 description = "CodeInsight-AI desktop host"
 authors = ["CodeInsight-AI contributors"]
 edition = "2021"
