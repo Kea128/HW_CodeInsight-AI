@@ -15,6 +15,18 @@ fn describe_error(context: &str, error: impl std::fmt::Display) -> String {
 }
 
 #[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let updater = app
+        .updater()
+        .map_err(|error| describe_error("更新组件初始化失败", error))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|error| describe_error("无法连接更新服务器", error))?;
+    Ok(update.map(|release| release.version.to_string()))
+}
+
+#[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let updater = app
         .updater()
@@ -47,7 +59,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![install_update, open_manual_update])
+        .invoke_handler(tauri::generate_handler![
+            check_update,
+            install_update,
+            open_manual_update
+        ])
         .setup(|app| {
             let process = match app
                 .shell()

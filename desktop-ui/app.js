@@ -228,16 +228,27 @@ document.querySelector("#use-local-button").addEventListener("click", async () =
 document.querySelector("#refresh-button").addEventListener("click", loadTasks);
 document.querySelector("#update-button").addEventListener("click", async () => {
   const button = document.querySelector("#update-button");
+  const idleLabel = button.textContent;
   button.disabled = true;
+  button.textContent = "正在检查…";
   try {
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error("更新组件不可用");
-    const version = await invoke("install_update");
+    const version = await invoke("check_update");
     if (!version) {
       window.alert("当前已是最新版本。");
       return;
     }
-    window.alert(`版本 ${version} 已安装，请重新启动应用。`);
+    if (!window.confirm(`发现新版本 ${version}，是否立即下载并安装？`)) {
+      return;
+    }
+    button.textContent = `正在安装 ${version}…`;
+    const installedVersion = await invoke("install_update");
+    if (!installedVersion) {
+      window.alert("更新状态已变化，请重新检查。");
+      return;
+    }
+    window.alert(`版本 ${installedVersion} 已安装，请重新启动应用。`);
   } catch (error) {
     const detail = errorMessage(error);
     const openDownload = window.confirm(
@@ -252,6 +263,7 @@ document.querySelector("#update-button").addEventListener("click", async () => {
     }
   } finally {
     button.disabled = false;
+    button.textContent = idleLabel;
   }
 });
 
