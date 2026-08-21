@@ -12,7 +12,7 @@ load_dotenv()
 # ruff: noqa: E402
 
 from api.logger import get_logger, setup_logging
-from api.routers import auth, chat, codemap, continuous, repo, system, wiki
+from api.routers import auth, chat, codemap, continuous, remote, repo, system, wiki
 from api.services.wiki import generate_repo_wiki, registry
 
 # Configure logging
@@ -67,6 +67,7 @@ for module in (
     auth,
     repo,
     continuous,
+    remote,
     wiki,
     chat,
     codemap,
@@ -81,6 +82,7 @@ async def recover_persistent_tasks():
         return
     recovered = await registry.recover(generate_repo_wiki)
     continuous.manager.start()
+    remote.manager.start()
     if recovered:
         logger.info("Recovered %d persistent wiki task(s)", recovered)
 
@@ -89,6 +91,7 @@ async def recover_persistent_tasks():
 async def stop_background_services():
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return
+    await remote.manager.stop()
     await continuous.manager.stop()
 
 

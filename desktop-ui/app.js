@@ -1,7 +1,9 @@
 const LOCAL_API = "http://127.0.0.1:8001";
-let apiBase = localStorage.getItem("codeinsight-api-base") || LOCAL_API;
+const apiBase = LOCAL_API;
+localStorage.setItem("codeinsight-api-base", LOCAL_API);
 const terminalStates = new Set(["completed", "failed", "cancelled"]);
 let tasksLoading = false;
+let remoteProjectsLoading = false;
 let modelConfigured = false;
 let modelProvider = localStorage.getItem("codeinsight-model-provider") || "openai";
 
@@ -52,44 +54,20 @@ async function api(path, options = {}) {
   }
 }
 
-function updateConnectionUi() {
-  const remote = apiBase !== LOCAL_API;
-  document.querySelector("#engine-url").value = apiBase;
-  const kind = document.querySelector("#connection-kind");
-  kind.textContent = remote ? "Ubuntu（SSH 隧道）" : "本机";
-  kind.className = "badge ready";
-}
-
-function normalizeLoopbackUrl(value) {
-  const url = new URL(value);
-  if (!["127.0.0.1", "localhost", "::1"].includes(url.hostname)) {
-    throw new Error("为保护源码，远程引擎必须通过 SSH 隧道连接到本机地址");
-  }
-  if (!["http:", "https:"].includes(url.protocol)) {
-    throw new Error("引擎地址仅支持 HTTP 或 HTTPS");
-  }
-  return url.origin;
-}
-
 async function waitForEngine() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
       await api("/");
-      setEngineStatus(
-        apiBase === LOCAL_API ? "本地引擎已就绪" : "Ubuntu 引擎已连接",
-        "ready",
-      );
+      setEngineStatus("本地引擎已就绪", "ready");
       await loadTasks();
+      await loadRemoteProjects();
       await loadModelSettings();
       return;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  setEngineStatus(
-    apiBase === LOCAL_API ? "本地引擎启动失败" : "SSH 隧道未连接",
-    "failed",
-  );
+  setEngineStatus("本地引擎启动失败", "failed");
 }
 
 function addButton(container, label, action, taskId, className = "secondary") {
@@ -218,6 +196,89 @@ async function loadTasks() {
   }
 }
 
+function formatSyncTime(timestamp) {
+  return timestamp ? new Date(timestamp).toLocaleString("zh-CN") : "尚未同步";
+}
+
+function remoteActionButton(label, action, className = "secondary") {
+  const button = document.createElement("button");
+  button.textContent = label;
+  button.className = className;
+  button.addEventListener("click", action);
+  return button;
+}
+
+function renderRemoteProject(project) {
+  const card = document.createElement("article");
+  card.className = "remote-project";
+  const detail = document.createElement("div");
+  const title = document.createElement("h3");
+  title.textContent = `${project.username}@${project.host}:${project.remote_path}`;
+  const status = document.createElement("p");
+  status.textContent = project.last_error
+    ? `同步失败：${project.last_error}`
+    : `最近同步：${formatSyncTime(project.last_sync_at)} · 每 ${project.poll_seconds} 秒`;
+  status.className = project.last_error ? "remote-error" : "";
+  const fingerprint = document.createElement("p");
+  fingerprint.className = "fingerprint";
+  fingerprint.textContent = project.host_fingerprint
+    ? `服务器指纹：${project.host_fingerprint}`
+    : "服务器指纹：等待首次连接";
+  detail.append(title, status, fingerprint);
+
+  const actions = document.createElement("div");
+  actions.className = "task-actions";
+  const syncButton = remoteActionButton("立即同步", async () => {
+    syncButton.disabled = true;
+    try {
+      await api(`/remote/projects/${encodeURIComponent(project.id)}/sync`, {
+        method: "POST",
+        timeout: 600000,
+      });
+      await Promise.all([loadRemoteProjects(), loadTasks()]);
+    } catch (error) {
+      window.alert(errorMessage(error));
+    } finally {
+      syncButton.disabled = false;
+    }
+  });
+  const deleteButton = remoteActionButton(
+    "删除",
+    async () => {
+      if (!window.confirm("删除远程项目及本机同步副本？服务器源代码不会被修改。")) return;
+      deleteButton.disabled = true;
+      try {
+        await api(`/remote/projects/${encodeURIComponent(project.id)}`, {
+          method: "DELETE",
+        });
+        await Promise.all([loadRemoteProjects(), loadTasks()]);
+      } catch (error) {
+        window.alert(errorMessage(error));
+        deleteButton.disabled = false;
+      }
+    },
+    "danger",
+  );
+  actions.append(syncButton, deleteButton);
+  card.append(detail, actions);
+  return card;
+}
+
+async function loadRemoteProjects() {
+  if (remoteProjectsLoading) return;
+  remoteProjectsLoading = true;
+  const list = document.querySelector("#remote-project-list");
+  try {
+    const projects = await api("/remote/projects");
+    list.replaceChildren();
+    projects.forEach((project) => list.append(renderRemoteProject(project)));
+  } catch (error) {
+    list.textContent = errorMessage(error);
+  } finally {
+    remoteProjectsLoading = false;
+  }
+}
+
 function updateModelForm() {
   const provider = document.querySelector("#model-provider");
   const keyLabel = document.querySelector("#api-key-label");
@@ -243,7 +304,11 @@ async function loadModelSettings() {
 
 document.querySelector("#model-provider").addEventListener("change", (event) => {
   modelProvider = event.target.value;
+  modelConfigured = false;
   updateModelForm();
+  const status = document.querySelector("#model-status");
+  status.textContent = "待保存";
+  status.className = "badge waiting";
 });
 
 document.querySelector("#model-form").addEventListener("submit", async (event) => {
@@ -265,6 +330,40 @@ document.querySelector("#model-form").addEventListener("submit", async (event) =
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error("桌面重启组件不可用，请手动重启软件");
     setTimeout(() => invoke("restart_app"), 300);
+  } catch (error) {
+    message.className = "message error";
+    message.textContent = errorMessage(error);
+  }
+});
+
+document.querySelector("#remote-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = document.querySelector("#remote-message");
+  const passwordInput = document.querySelector("#remote-password");
+  const body = {
+    host: document.querySelector("#remote-host").value.trim(),
+    port: Number(document.querySelector("#remote-port").value),
+    username: document.querySelector("#remote-username").value.trim(),
+    password: passwordInput.value,
+    remote_path: document.querySelector("#remote-path").value.trim(),
+    poll_seconds: Number(document.querySelector("#remote-poll-seconds").value),
+    provider: modelProvider,
+    language: "zh",
+  };
+  try {
+    message.className = "message";
+    if (!modelConfigured) {
+      throw new Error("请先在“AI 模型设置”中配置模型服务");
+    }
+    message.textContent = "正在连接 Ubuntu 并安全同步代码，首次同步可能需要几分钟…";
+    await api("/remote/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+      timeout: 600000,
+    });
+    passwordInput.value = "";
+    message.textContent = "远程目录已连接，正在执行首次代码分析。";
+    await Promise.all([loadRemoteProjects(), loadTasks()]);
   } catch (error) {
     message.className = "message error";
     message.textContent = errorMessage(error);
@@ -294,11 +393,6 @@ document.querySelector("#project-form").addEventListener("submit", async (event)
   };
   try {
     message.className = "message";
-    if (/^[a-zA-Z]:[\\/]/.test(path) && apiBase !== LOCAL_API) {
-      apiBase = LOCAL_API;
-      localStorage.setItem("codeinsight-api-base", apiBase);
-      updateConnectionUi();
-    }
     await api("/health");
     if (!modelConfigured) {
       throw new Error("请先在“AI 模型设置”中配置模型服务");
@@ -316,40 +410,6 @@ document.querySelector("#project-form").addEventListener("submit", async (event)
     message.className = "message error";
     message.textContent = errorMessage(error);
   }
-});
-
-document.querySelector("#connection-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const message = document.querySelector("#connection-message");
-  try {
-    const nextBase = normalizeLoopbackUrl(
-      document.querySelector("#engine-url").value.trim(),
-    );
-    const previousBase = apiBase;
-    apiBase = nextBase;
-    try {
-      await api("/health");
-    } catch (error) {
-      apiBase = previousBase;
-      throw error;
-    }
-    localStorage.setItem("codeinsight-api-base", apiBase);
-    updateConnectionUi();
-    setEngineStatus("分析引擎已连接", "ready");
-    message.className = "message";
-    message.textContent = apiBase === LOCAL_API ? "已连接本机引擎。" : "已通过 SSH 隧道连接 Ubuntu 引擎。";
-    await loadTasks();
-  } catch (error) {
-    message.className = "message error";
-    message.textContent = errorMessage(error);
-  }
-});
-
-document.querySelector("#use-local-button").addEventListener("click", async () => {
-  apiBase = LOCAL_API;
-  localStorage.setItem("codeinsight-api-base", apiBase);
-  updateConnectionUi();
-  await waitForEngine();
 });
 
 document.querySelector("#refresh-button").addEventListener("click", loadTasks);
@@ -397,7 +457,7 @@ document.querySelector("#update-button").addEventListener("click", async () => {
   }
 });
 
-updateConnectionUi();
 updateModelForm();
 waitForEngine();
 setInterval(loadTasks, 3000);
+setInterval(loadRemoteProjects, 5000);

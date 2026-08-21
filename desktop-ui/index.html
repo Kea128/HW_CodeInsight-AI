@@ -28,30 +28,43 @@
 
       <section class="panel">
         <div class="section-heading">
-          <h2>分析引擎连接</h2>
-          <span id="connection-kind" class="badge ready">本机</span>
+          <h2>Ubuntu 远程目录</h2>
+          <span class="badge ready">SSH / SFTP</span>
         </div>
-        <p class="hint">远程 Ubuntu 建议通过 SSH 隧道连接，不要将分析 API 直接暴露到公网。</p>
-        <form id="connection-form">
-          <label>
-            引擎地址
-            <input id="engine-url" type="url" value="http://127.0.0.1:8001" required />
-          </label>
-          <div class="connection-actions">
-            <button type="submit">连接引擎</button>
-            <button id="use-local-button" type="button" class="secondary">恢复本机引擎</button>
+        <p class="hint">输入服务器信息后，软件会通过 SFTP 将代码安全同步到本机再分析。密码保存在 Windows 凭据管理器，不写入项目数据库。</p>
+        <form id="remote-form">
+          <div class="row">
+            <label>
+              服务器 IP
+              <input id="remote-host" required placeholder="192.168.1.100" autocomplete="off" />
+            </label>
+            <label class="port-field">
+              SSH 端口
+              <input id="remote-port" type="number" min="1" max="65535" value="22" required />
+            </label>
           </div>
+          <div class="row">
+            <label>
+              服务器用户名
+              <input id="remote-username" required placeholder="ubuntu" autocomplete="username" />
+            </label>
+            <label>
+              服务器密码
+              <input id="remote-password" type="password" required autocomplete="current-password" />
+            </label>
+          </div>
+          <label>
+            远程目录
+            <input id="remote-path" required placeholder="/srv/code/my-project" autocomplete="off" />
+          </label>
+          <label>
+            自动同步间隔（秒）
+            <input id="remote-poll-seconds" type="number" min="10" max="3600" value="60" required />
+          </label>
+          <button type="submit">连接并开始分析</button>
         </form>
-        <details>
-          <summary>如何连接远程 Ubuntu？</summary>
-          <ol>
-            <li>在 Ubuntu 上启动 CodeInsight 引擎，并保持监听 <code>127.0.0.1:8001</code>。</li>
-            <li>在 Windows 执行：<code>ssh -N -L 18001:127.0.0.1:8001 user@ubuntu-host</code></li>
-            <li>将上方引擎地址改为 <code>http://127.0.0.1:18001</code>，再点击连接。</li>
-            <li>添加项目时填写 Ubuntu 上的绝对路径，例如 <code>/srv/code/my-project</code>。</li>
-          </ol>
-        </details>
-        <p id="connection-message" class="message"></p>
+        <p id="remote-message" class="message"></p>
+        <div id="remote-project-list" class="remote-project-list"></div>
       </section>
 
       <section class="panel">

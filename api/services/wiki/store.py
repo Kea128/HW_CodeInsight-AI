@@ -13,7 +13,7 @@ from typing import Any
 from api.utils import deepwiki_root
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def default_database_path() -> str:
@@ -89,6 +89,25 @@ class WikiTaskStore:
                     file_hashes_json TEXT NOT NULL DEFAULT '{}',
                     last_scan_at INTEGER,
                     last_task_id TEXT,
+                    updated_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS remote_projects (
+                    id TEXT PRIMARY KEY,
+                    host TEXT NOT NULL,
+                    port INTEGER NOT NULL DEFAULT 22,
+                    username TEXT NOT NULL,
+                    remote_path TEXT NOT NULL,
+                    local_path TEXT NOT NULL,
+                    credential_id TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'ollama',
+                    model TEXT,
+                    language TEXT NOT NULL DEFAULT 'zh',
+                    host_fingerprint TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    poll_seconds INTEGER NOT NULL DEFAULT 60,
+                    last_sync_at INTEGER,
+                    last_error TEXT,
                     updated_at INTEGER NOT NULL
                 );
                 """
@@ -245,6 +264,94 @@ class WikiTaskStore:
                 "DELETE FROM continuous_projects WHERE id = ?", (project_id,)
             )
         return cursor.rowcount > 0
+
+    def save_remote_project(self, project: dict[str, Any]) -> None:
+        now = int(time.time() * 1000)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO remote_projects (
+                    id, host, port, username, remote_path, local_path,
+                    credential_id, provider, model, language, host_fingerprint,
+                    enabled, poll_seconds, last_sync_at, last_error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    host=excluded.host,
+                    port=excluded.port,
+                    username=excluded.username,
+                    remote_path=excluded.remote_path,
+                    local_path=excluded.local_path,
+                    credential_id=excluded.credential_id,
+                    provider=excluded.provider,
+                    model=excluded.model,
+                    language=excluded.language,
+                    host_fingerprint=excluded.host_fingerprint,
+                    enabled=excluded.enabled,
+                    poll_seconds=excluded.poll_seconds,
+                    last_sync_at=excluded.last_sync_at,
+                    last_error=excluded.last_error,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    project["id"],
+                    project["host"],
+                    project.get("port", 22),
+                    project["username"],
+                    project["remote_path"],
+                    project["local_path"],
+                    project["credential_id"],
+                    project.get("provider", "ollama"),
+                    project.get("model"),
+                    project.get("language", "zh"),
+                    project.get("host_fingerprint"),
+                    int(project.get("enabled", True)),
+                    project.get("poll_seconds", 60),
+                    project.get("last_sync_at"),
+                    project.get("last_error"),
+                    now,
+                ),
+            )
+
+    def get_remote_project(self, project_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM remote_projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        return self._decode_remote_project(row) if row else None
+
+    def list_remote_projects(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM remote_projects ORDER BY id"
+            ).fetchall()
+        return [self._decode_remote_project(row) for row in rows]
+
+    def delete_remote_project(self, project_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM remote_projects WHERE id = ?", (project_id,)
+            )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _decode_remote_project(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "host": row["host"],
+            "port": row["port"],
+            "username": row["username"],
+            "remote_path": row["remote_path"],
+            "local_path": row["local_path"],
+            "credential_id": row["credential_id"],
+            "provider": row["provider"],
+            "model": row["model"],
+            "language": row["language"],
+            "host_fingerprint": row["host_fingerprint"],
+            "enabled": bool(row["enabled"]),
+            "poll_seconds": row["poll_seconds"],
+            "last_sync_at": row["last_sync_at"],
+            "last_error": row["last_error"],
+        }
 
     @staticmethod
     def _decode(row: sqlite3.Row) -> dict[str, Any]:

@@ -50,6 +50,36 @@ def test_store_round_trip_omits_token(tmp_path):
     assert restored["status"] == "generating"
 
 
+def test_remote_project_round_trip_never_contains_password(tmp_path):
+    store = WikiTaskStore(str(tmp_path / "tasks.db"))
+    project = {
+        "id": "remote-one",
+        "host": "10.0.0.8",
+        "port": 22,
+        "username": "ubuntu",
+        "remote_path": "/srv/code/demo",
+        "local_path": str(tmp_path / "mirror"),
+        "credential_id": "remote-one",
+        "provider": "ollama",
+        "model": None,
+        "language": "zh",
+        "host_fingerprint": "SHA256:test",
+        "enabled": True,
+        "poll_seconds": 60,
+        "last_sync_at": 123,
+        "last_error": None,
+        "password": "server-password",
+    }
+
+    store.save_remote_project(project)
+    restored = store.get_remote_project("remote-one")
+
+    assert restored["host"] == project["host"]
+    assert restored["credential_id"] == project["credential_id"]
+    assert "password" not in restored
+    assert b"server-password" not in (tmp_path / "tasks.db").read_bytes()
+
+
 @pytest.mark.asyncio
 async def test_registry_recovers_only_missing_pages(tmp_path):
     store = WikiTaskStore(str(tmp_path / "tasks.db"))

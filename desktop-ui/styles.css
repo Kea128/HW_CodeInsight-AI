@@ -28,6 +28,7 @@ summary { cursor: pointer; color: #70d8ff; }
 details li { margin: 8px 0; line-height: 1.55; }
 code { border-radius: 5px; padding: 2px 5px; background: #09101a; color: #dcecff; }
 .row > label { flex: 1; }
+.row > .port-field { flex: 0 0 150px; }
 input, select { width: 100%; border: 1px solid #34435a; border-radius: 9px; padding: 11px 12px; color: #edf3ff; background: #0b1019; outline: none; }
 input:focus, select:focus { border-color: #57c8ff; box-shadow: 0 0 0 3px rgba(87, 200, 255, .12); }
 .checkbox { display: flex; align-items: center; grid-template-columns: 18px auto; }
@@ -50,6 +51,12 @@ button:disabled { cursor: wait; opacity: .55; }
 .progress { height: 5px; margin-top: 10px; overflow: hidden; border-radius: 9px; background: #202a39; }
 .progress span { display: block; height: 100%; background: #63d2ff; }
 .message.error { color: #ff9ca4; }
+.remote-project-list { display: grid; gap: 10px; margin-top: 18px; }
+.remote-project { display: grid; grid-template-columns: 1fr auto; gap: 14px; padding: 16px; border: 1px solid #283346; border-radius: 12px; background: #0c121c; }
+.remote-project h3 { margin: 0 0 7px; font-size: 15px; overflow-wrap: anywhere; }
+.remote-project p { margin: 0; color: #98a9bf; font-size: 13px; line-height: 1.55; }
+.remote-project .remote-error { color: #ff9ca4; }
+.remote-project .fingerprint { margin-top: 5px; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; }
 .result-pages { display: grid; gap: 16px; margin-top: 16px; }
 .result-page { padding: 20px; border: 1px solid #2b3b52; border-radius: 12px; background: #0b111b; }
 .result-page h3 { margin: 0 0 14px; color: #70d8ff; }
@@ -57,5 +64,6 @@ button:disabled { cursor: wait; opacity: .55; }
 @media (max-width: 700px) {
   header, main { width: min(100% - 24px, 1120px); }
   .row, header { align-items: stretch; flex-direction: column; }
-  .task { grid-template-columns: 1fr; }
+  .task, .remote-project { grid-template-columns: 1fr; }
+  .row > .port-field { flex-basis: auto; }
 }

@@ -37,7 +37,7 @@ jobs:
           python -m pip install poetry
           poetry install -C api --no-interaction
           poetry -C api run python -m pip install pyinstaller
-          poetry -C api run python -c "import uvicorn; import api.main; print('Backend imports verified')"
+          poetry -C api run python -c "import keyring; import paramiko; import uvicorn; import api.main; print('Backend imports verified')"
           $version = (Get-Content package.json | ConvertFrom-Json).version
           $parts = $version.Split(".")
           @"
@@ -59,7 +59,7 @@ jobs:
             ]
           )
           "@ | Set-Content api/daemon-version.txt -Encoding UTF8
-          poetry -C api run python -m PyInstaller --noconfirm --clean --onefile --windowed --name codeinsight-daemon --version-file daemon-version.txt --paths .. --collect-all uvicorn --collect-all tiktoken --collect-submodules tiktoken_ext --collect-all adalflow --add-data "config;api/config" daemon.py
+          poetry -C api run python -m PyInstaller --noconfirm --clean --onefile --windowed --name codeinsight-daemon --version-file daemon-version.txt --paths .. --collect-all uvicorn --collect-all tiktoken --collect-submodules tiktoken_ext --collect-all adalflow --collect-all paramiko --collect-all keyring --collect-submodules keyring.backends --copy-metadata keyring --add-data "config;api/config" daemon.py
           New-Item -ItemType Directory -Force src-tauri/binaries
           Copy-Item api/dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
 
