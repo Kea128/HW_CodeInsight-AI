@@ -24,6 +24,12 @@ logger = get_logger(__name__)
 _RAG_PREPARE_SEMAPHORE: asyncio.Semaphore | None = None
 
 
+def _ollama_model_matches(requested: str, available: str) -> bool:
+    if requested == available:
+        return True
+    return ":" not in requested and available == f"{requested}:latest"
+
+
 def _get_rag_semaphore() -> asyncio.Semaphore:
     global _RAG_PREPARE_SEMAPHORE
     if _RAG_PREPARE_SEMAPHORE is None:
@@ -54,7 +60,9 @@ def check_ollama_model_exists(model_name: str, ollama_host: str | None = None) -
         # Remove /api prefix if present and add it back
         ollama_host = ollama_host.removesuffix("/api")
         ret: ollama.ListResponse = ollama.Client(host=ollama_host, timeout=5).list()
-        is_available = any(model_name == model.model for model in ret.models)
+        is_available = any(
+            _ollama_model_matches(model_name, model.model) for model in ret.models
+        )
         if is_available:
             logger.info("Ollama model '%s' is available", model_name)
         else:
