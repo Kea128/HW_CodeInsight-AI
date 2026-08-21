@@ -402,6 +402,10 @@ async def generate_repo_wiki(task: WikiTask) -> None:
         task.status = TaskStatus.GENERATING
         task.persist("generating")
         pages = await _generate_pages(task, structure)
+        if pages and all(
+            page.content.startswith("Error generating content:") for page in pages.values()
+        ):
+            raise RuntimeError("All wiki pages failed to generate")
 
         await task.control_point()
         await _save(task, pages)
@@ -608,6 +612,8 @@ async def _generate_page(task: WikiTask, page: WikiPage) -> WikiPage:
     async for chunk in await research_chat(chat_request):
         content += chunk
 
+    if content.lstrip().startswith("Error with "):
+        raise RuntimeError(content.strip())
     content = _strip_markdown_fences(content)
     content = post_process_wiki_content(content, list(page.filePaths), ctx)
     return page.model_copy(update={"content": content})
