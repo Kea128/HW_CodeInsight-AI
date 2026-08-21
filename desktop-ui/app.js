@@ -80,6 +80,7 @@ async function waitForEngine() {
         "ready",
       );
       await loadTasks();
+      await loadModelSettings();
       return;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -348,5 +349,4 @@ document.querySelector("#update-button").addEventListener("click", async () => {
 updateConnectionUi();
 updateModelForm();
 waitForEngine();
-loadModelSettings();
 setInterval(loadTasks, 3000);

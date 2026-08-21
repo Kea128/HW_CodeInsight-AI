@@ -1,5 +1,7 @@
 use base64::Engine;
 use minisign_verify::{PublicKey, Signature};
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -12,6 +14,8 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const RELEASES_URL: &str = "https://github.com/Kea128/HW_CodeInsight-AI/releases/latest";
+const UPDATE_MANIFEST_URL: &str =
+    "https://github.com/Kea128/HW_CodeInsight-AI/releases/latest/download/latest.json";
 const UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5RkM2RUU5Mzc4MkRCOQpSV1M1TFhpVDdzYWZDOGxXczNuWTB3WjB6R0tWb1pmWnF3RXAwcnZCVFY1NFBjV2hORE5mYnhwNAo=";
 const UPDATE_ATTEMPTS: usize = 3;
 const UPDATE_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -19,6 +23,26 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct DaemonProcess(Mutex<Option<CommandChild>>);
 struct PendingUpdate(Mutex<Option<Update>>);
+struct PendingManualUpdate(Mutex<Option<ManualUpdate>>);
+
+#[derive(Clone)]
+struct ManualUpdate {
+    version: String,
+    url: String,
+    signature: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateManifest {
+    version: String,
+    platforms: HashMap<String, UpdatePlatform>,
+}
+
+#[derive(Deserialize)]
+struct UpdatePlatform {
+    url: String,
+    signature: String,
+}
 
 fn describe_error(context: &str, error: impl std::fmt::Display) -> String {
     format!("{context}: {error}")
@@ -40,9 +64,7 @@ fn verify_update_signature(data: &[u8], encoded_signature: &str) -> Result<(), S
         .map_err(|error| describe_error("更新包签名校验失败", error))
 }
 
-async fn download_with_windows(update: &Update) -> Result<Vec<u8>, String> {
-    let url = update.download_url.to_string();
-    let signature = update.signature.clone();
+async fn download_url_with_windows(url: String) -> Result<Vec<u8>, String> {
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -73,8 +95,71 @@ async fn download_with_windows(update: &Update) -> Result<Vec<u8>, String> {
     })
     .await
     .map_err(|error| describe_error("Windows 下载任务异常", error))??;
-    verify_update_signature(&bytes, &signature)?;
     Ok(bytes)
+}
+
+async fn download_with_windows(update: &Update) -> Result<Vec<u8>, String> {
+    let bytes = download_url_with_windows(update.download_url.to_string()).await?;
+    verify_update_signature(&bytes, &update.signature)?;
+    Ok(bytes)
+}
+
+async fn check_with_windows(app: &tauri::AppHandle) -> Result<Option<ManualUpdate>, String> {
+    let bytes = download_url_with_windows(UPDATE_MANIFEST_URL.to_string()).await?;
+    let manifest: UpdateManifest = serde_json::from_slice(&bytes)
+        .map_err(|error| describe_error("Windows 更新清单无效", error))?;
+    let current = semver::Version::parse(&app.package_info().version.to_string())
+        .map_err(|error| describe_error("当前版本号无效", error))?;
+    let announced = semver::Version::parse(manifest.version.trim_start_matches('v'))
+        .map_err(|error| describe_error("更新版本号无效", error))?;
+    if announced <= current {
+        return Ok(None);
+    }
+    let version = manifest.version.clone();
+    let platform = manifest
+        .platforms
+        .get("windows-x86_64")
+        .ok_or_else(|| "更新清单缺少 windows-x86_64 安装包".to_string())?;
+    Ok(Some(ManualUpdate {
+        version,
+        url: platform.url.clone(),
+        signature: platform.signature.clone(),
+    }))
+}
+
+async fn install_with_windows(update: ManualUpdate) -> Result<String, String> {
+    let bytes = download_url_with_windows(update.url).await?;
+    verify_update_signature(&bytes, &update.signature)?;
+    let version = update.version;
+    tauri::async_runtime::spawn_blocking(move || {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "codeinsight-update-{}-{nonce}.msi",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes)
+            .map_err(|error| describe_error("无法保存 Windows 更新包", error))?;
+        let output = Command::new("msiexec.exe")
+            .arg("/i")
+            .arg(&path)
+            .args(["/passive", "/norestart"])
+            .output()
+            .map_err(|error| describe_error("无法启动 Windows 安装程序", error))?;
+        let _ = std::fs::remove_file(&path);
+        if !output.status.success() {
+            return Err(format!(
+                "Windows 安装程序失败，退出码 {}",
+                output.status.code().unwrap_or(-1)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| describe_error("Windows 安装任务异常", error))??;
+    Ok(version)
 }
 
 #[tauri::command]
@@ -99,6 +184,9 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
                         .map_err(|_| "无法保存待安装更新状态".to_string())?;
                     *pending = update;
                 }
+                if let Ok(mut pending) = app.state::<PendingManualUpdate>().0.lock() {
+                    *pending = None;
+                }
                 return Ok(version);
             }
             Err(error) => last_error = Some(error),
@@ -110,17 +198,40 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
             .await;
         }
     }
-    match last_error {
-        Some(error) => Err(describe_error(
-            "重试 3 次后仍无法连接更新服务器",
-            error,
+    let builtin_error = last_error.map(|error| error.to_string());
+    match check_with_windows(&app).await {
+        Ok(Some(update)) => {
+            let version = update.version.clone();
+            let state = app.state::<PendingManualUpdate>();
+            let mut pending = state
+                .0
+                .lock()
+                .map_err(|_| "无法保存 Windows 待安装更新状态".to_string())?;
+            *pending = Some(update);
+            Ok(Some(version))
+        }
+        Ok(None) => Ok(None),
+        Err(fallback_error) => Err(format!(
+            "内置更新检查失败：{}；Windows 备用检查失败：{fallback_error}",
+            builtin_error.unwrap_or_else(|| "未知错误".to_string())
         )),
-        None => Ok(None),
     }
 }
 
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let manual_update = {
+        let state = app.state::<PendingManualUpdate>();
+        let mut pending = state
+            .0
+            .lock()
+            .map_err(|_| "无法读取 Windows 待安装更新状态".to_string())?;
+        pending.take()
+    };
+    if let Some(update) = manual_update {
+        return install_with_windows(update).await.map(Some);
+    }
+
     let mut update = {
         let state = app.state::<PendingUpdate>();
         let mut pending = state
@@ -153,13 +264,20 @@ async fn install_update(app: tauri::AppHandle) -> Result<Option<String>, String>
         }
     }
     let Some(update) = update else {
-        if let Some(error) = last_error {
-            return Err(describe_error(
-                "重试 3 次后仍无法连接更新服务器",
-                error,
-            ));
+        match check_with_windows(&app).await {
+            Ok(Some(manual_update)) => {
+                return install_with_windows(manual_update).await.map(Some);
+            }
+            Ok(None) => return Ok(None),
+            Err(fallback_error) => {
+                if let Some(error) = last_error {
+                    return Err(format!(
+                        "内置更新检查失败：{error}；Windows 备用检查失败：{fallback_error}"
+                    ));
+                }
+                return Err(fallback_error);
+            }
         }
-        return Ok(None);
     };
     let version = update.version.to_string();
     let bytes = match tokio::time::timeout(
@@ -203,6 +321,7 @@ pub fn run() {
         ])
         .setup(|app| {
             app.manage(PendingUpdate(Mutex::new(None)));
+            app.manage(PendingManualUpdate(Mutex::new(None)));
             let process = match app
                 .shell()
                 .sidecar("codeinsight-daemon")
