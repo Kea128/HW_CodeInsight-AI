@@ -15,6 +15,8 @@ from api.config import iterate_files
 from api.schemas import WikiPage, WikiSection, WikiStructureModel
 
 logger = get_logger(__name__)
+FALLBACK_PAGE_FILE_LIMIT = 12
+FALLBACK_FILE_LIMIT = 96
 
 
 def read_repo_file_tree(
@@ -65,6 +67,48 @@ def detect_default_branch(path: str) -> str:
 def _normalize_importance(value: str | None) -> str:
     v = (value or "").strip().lower()
     return v if v in ("high", "medium", "low") else "medium"
+
+
+def build_fallback_structure(
+    repo_name: str, files: list[str], comprehensive: bool
+) -> WikiStructureModel:
+    """Build a usable structure when a small local model does not return XML."""
+    selected = sorted(files)[:FALLBACK_FILE_LIMIT]
+    chunks = [
+        selected[index : index + FALLBACK_PAGE_FILE_LIMIT]
+        for index in range(0, len(selected), FALLBACK_PAGE_FILE_LIMIT)
+    ] or [[]]
+    pages = [
+        WikiPage(
+            id=f"page-{index + 1}",
+            title="代码库概览" if len(chunks) == 1 else f"代码模块 {index + 1}",
+            content="",
+            filePaths=chunk,
+            importance="high" if index == 0 else "medium",
+            relatedPages=[],
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+    sections = (
+        [
+            WikiSection(
+                id="section-overview",
+                title="代码分析",
+                pages=[page.id for page in pages],
+                subsections=None,
+            )
+        ]
+        if comprehensive
+        else []
+    )
+    return WikiStructureModel(
+        id="wiki",
+        title=f"{repo_name} 代码分析",
+        description="根据仓库文件树生成的本地分析结构。",
+        pages=pages,
+        sections=sections,
+        rootSections=["section-overview"] if sections else [],
+    )
 
 
 def _page_from_element(el: ET.Element, index: int) -> WikiPage:

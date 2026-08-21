@@ -1,6 +1,7 @@
 import pytest
 
 from api.services.wiki.structure import (
+    build_fallback_structure,
     detect_default_branch,
     parse_wiki_structure,
     read_repo_file_tree,
@@ -36,6 +37,17 @@ COMPREHENSIVE_XML = """
   </pages>
 </wiki_structure>
 """
+
+
+def test_fallback_structure_groups_real_files():
+    files = [f"src/module_{index}.py" for index in range(15)]
+
+    structure = build_fallback_structure("sample", files, comprehensive=True)
+
+    assert structure.title == "sample 代码分析"
+    assert len(structure.pages) == 2
+    assert sum(len(page.filePaths) for page in structure.pages) == 15
+    assert structure.sections[0].pages == ["page-1", "page-2"]
 
 
 def test_parse_comprehensive():

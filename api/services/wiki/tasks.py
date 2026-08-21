@@ -34,9 +34,10 @@ from api.services.wiki.content import (
 )
 
 from api.services.wiki.structure import (
+    build_fallback_structure,
     detect_default_branch,
-    read_repo_file_tree,
     parse_wiki_structure,
+    read_repo_file_tree,
 )
 
 from api.services.wiki.prompts import (
@@ -525,10 +526,10 @@ async def _determine_structure(task: WikiTask) -> WikiStructureModel:
     file_tree, readme = await asyncio.to_thread(
         read_repo_file_tree,
         repo.save_path,
-        r.excluded_dirs,
-        r.excluded_files,
-        r.included_dirs,
-        r.included_files,
+        included_files=r.included_files,
+        included_dirs=r.included_dirs,
+        excluded_files=r.excluded_files,
+        excluded_dirs=r.excluded_dirs,
     )
 
     prompt = build_structure_prompt(
@@ -552,7 +553,18 @@ async def _determine_structure(task: WikiTask) -> WikiStructureModel:
     async for chunk in await research_chat(chat_request):
         text += chunk
 
-    return parse_wiki_structure(text, comprehensive=r.comprehensive)
+    try:
+        structure = parse_wiki_structure(text, comprehensive=r.comprehensive)
+        if structure.pages:
+            return structure
+        raise ValueError("The model returned a structure without pages")
+    except ValueError as error:
+        logger.warning(
+            "Using deterministic wiki structure for %s after model output error: %s",
+            task.repo_key,
+            error,
+        )
+        return build_fallback_structure(r.repo, file_tree, r.comprehensive)
 
 
 def _strip_markdown_fences(content: str) -> str:
