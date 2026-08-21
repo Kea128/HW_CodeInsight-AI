@@ -104,6 +104,8 @@ async def list_wiki_cache() -> list[WikiTaskSummary]:
         file_path = os.path.join(WIKI_CACHE_DIR, filename)
         try:
             stats = await asyncio.to_thread(os.stat, file_path)
+            cache = await aload(WikiCacheData, file_path, encoding="utf-8")
+            page_count = len(cache.generated_pages)
             repo_type, owner, *repo, language = (
                 os.path.splitext(filename)[0].removeprefix(WIKI_PREFIX).split("_")
             )
@@ -116,6 +118,8 @@ async def list_wiki_cache() -> list[WikiTaskSummary]:
                     language=language,
                     submitted_at=int(stats.st_mtime * 1000),
                     status=TaskStatus.COMPLETED,
+                    pages_done=page_count,
+                    pages_total=page_count,
                 )
             )
         except Exception:

@@ -112,6 +112,48 @@ function addButton(container, label, action, taskId, className = "secondary") {
   container.append(button);
 }
 
+async function loadWikiResult(task) {
+  const panel = document.querySelector("#result-panel");
+  const title = document.querySelector("#result-title");
+  const message = document.querySelector("#result-message");
+  const pagesContainer = document.querySelector("#result-pages");
+  panel.hidden = false;
+  title.textContent = `${task.owner}/${task.repo} 分析结果`;
+  message.className = "message";
+  message.textContent = "正在读取已生成页面…";
+  pagesContainer.replaceChildren();
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  try {
+    const query = new URLSearchParams({
+      owner: task.owner,
+      repo: task.repo,
+      repo_type: task.repo_type,
+      language: task.language,
+    });
+    const cache = await api(`/api/wiki_cache?${query}`);
+    if (!cache) throw new Error("分析缓存不存在，请重新运行分析");
+    const generated = cache.generated_pages || {};
+    const orderedPages = (cache.wiki_structure?.pages || [])
+      .map((page) => generated[page.id] || page)
+      .filter(Boolean);
+    if (!orderedPages.length) throw new Error("分析完成但没有生成可显示的页面");
+    for (const page of orderedPages) {
+      const article = document.createElement("article");
+      article.className = "result-page";
+      const heading = document.createElement("h3");
+      heading.textContent = page.title;
+      const content = document.createElement("pre");
+      content.textContent = page.content;
+      article.append(heading, content);
+      pagesContainer.append(article);
+    }
+    message.textContent = `共 ${orderedPages.length} 页`;
+  } catch (error) {
+    message.className = "message error";
+    message.textContent = errorMessage(error);
+  }
+}
+
 function renderTask(task) {
   const card = document.createElement("article");
   card.className = "task";
@@ -136,7 +178,13 @@ function renderTask(task) {
 
   const actions = document.createElement("div");
   actions.className = "task-actions";
-  if (!terminalStates.has(task.status)) {
+  if (task.status === "completed") {
+    const viewButton = document.createElement("button");
+    viewButton.className = "secondary";
+    viewButton.textContent = "查看结果";
+    viewButton.addEventListener("click", () => loadWikiResult(task));
+    actions.append(viewButton);
+  } else if (!terminalStates.has(task.status)) {
     if (task.status === "paused") {
       addButton(actions, "继续", "resume", task.id);
     } else {
@@ -305,6 +353,9 @@ document.querySelector("#use-local-button").addEventListener("click", async () =
 });
 
 document.querySelector("#refresh-button").addEventListener("click", loadTasks);
+document.querySelector("#close-result-button").addEventListener("click", () => {
+  document.querySelector("#result-panel").hidden = true;
+});
 document.querySelector("#update-button").addEventListener("click", async () => {
   const button = document.querySelector("#update-button");
   const idleLabel = button.textContent;
