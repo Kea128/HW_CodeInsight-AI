@@ -77,6 +77,7 @@ def main() -> None:
         port=int(os.environ.get("PORT", "8001")),
         reload=False,
         access_log=False,
+        log_config=None,
     )
 
 
