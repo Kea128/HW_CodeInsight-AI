@@ -13,12 +13,80 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from api.desktop_settings import save_desktop_settings
+from api.desktop_settings import load_desktop_settings, save_desktop_settings
 
 OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
-REQUIRED_MODELS = ("qwen3:1.7b", "nomic-embed-text")
-MINIMUM_FREE_BYTES = 4 * 1024**3
+EMBEDDER_MODEL = "nomic-embed-text"
+MODEL_TIERS = {
+    "minimal": {
+        "model": "qwen3:1.7b",
+        "label": "轻量",
+        "memory_gb": 8,
+        "disk_gb": 6,
+        "description": "适合 8 GB 内存，速度优先。",
+    },
+    "balanced": {
+        "model": "qwen3:4b",
+        "label": "均衡",
+        "memory_gb": 16,
+        "disk_gb": 10,
+        "description": "适合 16 GB 内存，显著提升代码理解质量。",
+    },
+    "quality": {
+        "model": "qwen3:8b",
+        "label": "高质量",
+        "memory_gb": 32,
+        "disk_gb": 14,
+        "description": "适合 32 GB 内存或独立显卡，质量优先。",
+    },
+}
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def total_memory_gb() -> int:
+    if os.name == "nt":
+        import ctypes
+
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("length", ctypes.c_ulong),
+                ("memory_load", ctypes.c_ulong),
+                ("total_physical", ctypes.c_ulonglong),
+                ("available_physical", ctypes.c_ulonglong),
+                ("total_page_file", ctypes.c_ulonglong),
+                ("available_page_file", ctypes.c_ulonglong),
+                ("total_virtual", ctypes.c_ulonglong),
+                ("available_virtual", ctypes.c_ulonglong),
+                ("available_extended_virtual", ctypes.c_ulonglong),
+            ]
+
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(MemoryStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return max(1, round(status.total_physical / 1024**3))
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        return max(1, round(pages * page_size / 1024**3))
+    except (AttributeError, OSError, ValueError):
+        return 8
+
+
+def recommended_tier(memory_gb: int | None = None) -> str:
+    memory_gb = memory_gb or total_memory_gb()
+    if memory_gb >= 28:
+        return "quality"
+    if memory_gb >= 14:
+        return "balanced"
+    return "minimal"
+
+
+def resolve_tier(tier: str, memory_gb: int | None = None) -> str:
+    if tier == "auto":
+        return recommended_tier(memory_gb)
+    if tier not in MODEL_TIERS:
+        raise ValueError("未知的本地模型质量档位")
+    return tier
 
 
 def find_ollama_executable() -> str | None:
@@ -59,6 +127,7 @@ class OllamaInstaller:
     def __init__(self):
         self._lock = threading.RLock()
         self._worker: threading.Thread | None = None
+        self._requested_tier = load_desktop_settings().get("ollama_tier", "auto")
         self._status: dict[str, Any] = {
             "state": "idle",
             "step": "检查本地 AI 环境",
@@ -76,15 +145,26 @@ class OllamaInstaller:
             status = self._status.copy()
         executable = find_ollama_executable()
         models = _ollama_tags() if executable else None
+        memory_gb = total_memory_gb()
+        resolved_tier = resolve_tier(self._requested_tier, memory_gb)
+        required_models = (MODEL_TIERS[resolved_tier]["model"], EMBEDDER_MODEL)
         status.update(
             {
                 "installed": executable is not None,
                 "running": models is not None,
                 "models": models or [],
+                "selected_tier": self._requested_tier,
+                "resolved_tier": resolved_tier,
+                "recommended_tier": recommended_tier(memory_gb),
+                "model": MODEL_TIERS[resolved_tier]["model"],
+                "memory_gb": memory_gb,
+                "tiers": [
+                    {"id": tier_id, **config} for tier_id, config in MODEL_TIERS.items()
+                ],
                 "ready": bool(
                     models
                     and all(
-                        _model_available(model, models) for model in REQUIRED_MODELS
+                        _model_available(model, models) for model in required_models
                     )
                 ),
             }
@@ -98,10 +178,12 @@ class OllamaInstaller:
             )
         return status
 
-    def start(self) -> dict[str, Any]:
+    def start(self, tier: str = "auto") -> dict[str, Any]:
         with self._lock:
             if self._worker and self._worker.is_alive():
                 return self.status()
+            resolve_tier(tier)
+            self._requested_tier = tier
             self._status = {
                 "state": "installing",
                 "step": "准备安装",
@@ -118,9 +200,16 @@ class OllamaInstaller:
     def _install(self) -> None:
         installer_path = Path(tempfile.gettempdir()) / "CodeInsight-OllamaSetup.exe"
         try:
+            resolved_tier = resolve_tier(self._requested_tier)
+            tier_config = MODEL_TIERS[resolved_tier]
+            required_models = (tier_config["model"], EMBEDDER_MODEL)
             free_bytes = shutil.disk_usage(Path.home()).free
-            if free_bytes < MINIMUM_FREE_BYTES:
-                raise RuntimeError("可用磁盘空间不足 4 GB，无法安装本地 AI 环境")
+            minimum_free_bytes = int(tier_config["disk_gb"]) * 1024**3
+            if free_bytes < minimum_free_bytes:
+                raise RuntimeError(
+                    f"可用磁盘空间不足 {tier_config['disk_gb']} GB，"
+                    f"无法安装{tier_config['label']}模型"
+                )
 
             executable = find_ollama_executable()
             if not executable:
@@ -153,7 +242,13 @@ class OllamaInstaller:
                     raise RuntimeError("Ollama 已安装，但找不到 ollama.exe")
 
             self._ensure_server(executable)
-            for index, model in enumerate(REQUIRED_MODELS):
+            available_models = _ollama_tags() or []
+            models_to_pull = [
+                model
+                for model in required_models
+                if not _model_available(model, available_models)
+            ]
+            for index, model in enumerate(models_to_pull):
                 progress = 55 + index * 20
                 self._update(
                     step=f"下载模型 {model}",
@@ -171,7 +266,12 @@ class OllamaInstaller:
                 if result.returncode != 0:
                     raise RuntimeError(f"模型 {model} 下载失败")
 
-            save_desktop_settings("ollama", None)
+            save_desktop_settings(
+                "ollama",
+                None,
+                ollama_tier=self._requested_tier,
+                ollama_model=str(tier_config["model"]),
+            )
             self._update(
                 state="ready",
                 step="本地 AI 已安装",

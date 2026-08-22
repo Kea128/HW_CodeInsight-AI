@@ -4,6 +4,8 @@ from api.services import ollama_installer
 
 
 def test_status_reports_required_models_ready(monkeypatch):
+    monkeypatch.setattr(ollama_installer, "total_memory_gb", lambda: 8)
+    monkeypatch.setattr(ollama_installer, "load_desktop_settings", dict)
     monkeypatch.setattr(
         ollama_installer, "find_ollama_executable", lambda: "ollama.exe"
     )
@@ -23,6 +25,8 @@ def test_status_reports_required_models_ready(monkeypatch):
 
 
 def test_status_distinguishes_installed_runtime_from_models(monkeypatch):
+    monkeypatch.setattr(ollama_installer, "total_memory_gb", lambda: 8)
+    monkeypatch.setattr(ollama_installer, "load_desktop_settings", dict)
     monkeypatch.setattr(
         ollama_installer, "find_ollama_executable", lambda: "ollama.exe"
     )
@@ -44,7 +48,7 @@ def test_install_pulls_models_and_selects_ollama(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ollama_installer,
         "_ollama_tags",
-        lambda: ["qwen3:1.7b", "nomic-embed-text:latest"],
+        lambda: ["nomic-embed-text:latest"],
     )
     monkeypatch.setattr(
         ollama_installer.shutil,
@@ -59,13 +63,28 @@ def test_install_pulls_models_and_selects_ollama(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ollama_installer,
         "save_desktop_settings",
-        lambda provider, key: saved.append((provider, key)),
+        lambda provider, key, **options: saved.append((provider, key, options)),
     )
+    monkeypatch.setattr(ollama_installer, "load_desktop_settings", dict)
+    monkeypatch.setattr(ollama_installer, "total_memory_gb", lambda: 16)
     monkeypatch.setattr(ollama_installer.tempfile, "gettempdir", lambda: str(tmp_path))
 
     service = ollama_installer.OllamaInstaller()
+    service._requested_tier = "balanced"
     service._install()
 
-    assert [command[-1] for command in pulled] == list(ollama_installer.REQUIRED_MODELS)
-    assert saved == [("ollama", None)]
+    assert [command[-1] for command in pulled] == ["qwen3:4b"]
+    assert saved == [
+        (
+            "ollama",
+            None,
+            {"ollama_tier": "balanced", "ollama_model": "qwen3:4b"},
+        )
+    ]
     assert service.status()["restart_required"] is True
+
+
+def test_recommended_tier_tracks_memory():
+    assert ollama_installer.recommended_tier(8) == "minimal"
+    assert ollama_installer.recommended_tier(16) == "balanced"
+    assert ollama_installer.recommended_tier(32) == "quality"

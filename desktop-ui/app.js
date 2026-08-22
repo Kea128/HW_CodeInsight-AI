@@ -8,6 +8,8 @@ let modelConfigured = false;
 let modelProvider = localStorage.getItem("codeinsight-model-provider") || "openai";
 let ollamaRestarting = false;
 let ollamaStatusLoading = false;
+let latestTasks = [];
+let taskFilter = "all";
 
 function errorMessage(error) {
   if (typeof error === "string" && error.trim()) return error;
@@ -25,6 +27,29 @@ function setEngineStatus(text, kind) {
   const element = document.querySelector("#engine-status");
   element.textContent = text;
   element.className = `badge ${kind}`;
+}
+
+function openDrawer(id) {
+  document.querySelectorAll(".drawer.open").forEach((drawer) => {
+    drawer.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+  });
+  const drawer = document.querySelector(`#${id}`);
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+  document.querySelector("#drawer-backdrop").hidden = false;
+}
+
+function closeDrawers() {
+  document.querySelectorAll(".drawer.open").forEach((drawer) => {
+    drawer.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+  });
+  document.querySelector("#drawer-backdrop").hidden = true;
+}
+
+function updateSetupBanner() {
+  document.querySelector("#setup-banner").hidden = modelConfigured;
 }
 
 async function api(path, options = {}) {
@@ -93,17 +118,43 @@ function addButton(container, label, action, taskId, className = "secondary") {
   container.append(button);
 }
 
+function renderMarkdown(markdown) {
+  const container = document.createElement("div");
+  container.className = "markdown-body";
+  let code = null;
+  for (const rawLine of String(markdown || "").split(/\r?\n/)) {
+    if (rawLine.trim().startsWith("```")) {
+      if (code) {
+        container.append(code);
+        code = null;
+      } else {
+        code = document.createElement("pre");
+      }
+      continue;
+    }
+    if (code) {
+      code.textContent += `${rawLine}\n`;
+      continue;
+    }
+    const heading = rawLine.match(/^(#{1,4})\s+(.+)$/);
+    const element = document.createElement(heading ? `h${heading[1].length + 2}` : "p");
+    element.textContent = heading ? heading[2] : rawLine.replace(/^[-*]\s+/, "• ");
+    if (!element.textContent.trim()) element.className = "markdown-spacer";
+    container.append(element);
+  }
+  if (code) container.append(code);
+  return container;
+}
+
 async function loadWikiResult(task) {
-  const panel = document.querySelector("#result-panel");
   const title = document.querySelector("#result-title");
   const message = document.querySelector("#result-message");
   const pagesContainer = document.querySelector("#result-pages");
-  panel.hidden = false;
+  openDrawer("result-panel");
   title.textContent = `${task.owner}/${task.repo} 分析结果`;
   message.className = "message";
   message.textContent = "正在读取已生成页面…";
   pagesContainer.replaceChildren();
-  panel.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     const query = new URLSearchParams({
       owner: task.owner,
@@ -123,8 +174,7 @@ async function loadWikiResult(task) {
       article.className = "result-page";
       const heading = document.createElement("h3");
       heading.textContent = page.title;
-      const content = document.createElement("pre");
-      content.textContent = page.content;
+      const content = renderMarkdown(page.content);
       article.append(heading, content);
       pagesContainer.append(article);
     }
@@ -177,23 +227,32 @@ function renderTask(task) {
   return card;
 }
 
+function renderTaskList() {
+  const list = document.querySelector("#task-list");
+  const tasks = latestTasks.filter((task) => {
+    if (taskFilter === "active") return !terminalStates.has(task.status);
+    if (taskFilter === "completed") return task.status === "completed";
+    return true;
+  });
+  list.replaceChildren();
+  if (!tasks.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = taskFilter === "all" ? "尚无分析任务。" : "当前筛选下没有任务。";
+    list.append(empty);
+    return;
+  }
+  tasks.forEach((task) => list.append(renderTask(task)));
+}
+
 async function loadTasks() {
   if (tasksLoading) return;
   tasksLoading = true;
-  const list = document.querySelector("#task-list");
   try {
-    const tasks = await api("/wiki/tasks");
-    list.replaceChildren();
-    if (!tasks.length) {
-      const empty = document.createElement("p");
-      empty.className = "empty";
-      empty.textContent = "尚无分析任务。";
-      list.append(empty);
-      return;
-    }
-    tasks.forEach((task) => list.append(renderTask(task)));
+    latestTasks = await api("/wiki/tasks");
+    renderTaskList();
   } catch (error) {
-    list.textContent = errorMessage(error);
+    document.querySelector("#task-list").textContent = errorMessage(error);
   } finally {
     tasksLoading = false;
   }
@@ -231,6 +290,11 @@ function renderRemoteProject(project) {
 
   const actions = document.createElement("div");
   actions.className = "task-actions";
+  const terminalButton = remoteActionButton("打开终端", () => {
+    window.dispatchEvent(
+      new CustomEvent("codeinsight:open-terminal", { detail: project }),
+    );
+  });
   const syncButton = remoteActionButton("立即同步", async () => {
     syncButton.disabled = true;
     try {
@@ -262,7 +326,7 @@ function renderRemoteProject(project) {
     },
     "danger",
   );
-  actions.append(syncButton, deleteButton);
+  actions.append(terminalButton, syncButton, deleteButton);
   card.append(detail, actions);
   return card;
 }
@@ -274,7 +338,14 @@ async function loadRemoteProjects() {
   try {
     const projects = await api("/remote/projects");
     list.replaceChildren();
-    projects.forEach((project) => list.append(renderRemoteProject(project)));
+    if (!projects.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "尚未连接 Ubuntu 项目。";
+      list.append(empty);
+    } else {
+      projects.forEach((project) => list.append(renderRemoteProject(project)));
+    }
   } catch (error) {
     list.textContent = errorMessage(error);
   } finally {
@@ -295,13 +366,16 @@ async function loadModelSettings() {
     const settings = await api("/desktop/settings");
     modelProvider = settings.provider;
     modelConfigured = settings.configured;
+    document.querySelector("#ollama-tier").value = settings.ollama_tier || "auto";
     localStorage.setItem("codeinsight-model-provider", modelProvider);
     updateModelForm();
-    status.textContent = modelConfigured ? "已配置" : "需要配置";
+    status.textContent = modelConfigured ? "AI 已就绪" : "AI 需要配置";
     status.className = `badge ${modelConfigured ? "ready" : "failed"}`;
+    updateSetupBanner();
   } catch (error) {
     status.textContent = "读取失败";
     status.className = "badge failed";
+    updateSetupBanner();
   }
 }
 
@@ -310,6 +384,7 @@ async function loadOllamaStatus() {
   ollamaStatusLoading = true;
   const badge = document.querySelector("#ollama-status");
   const button = document.querySelector("#install-ollama-button");
+  const settingsButton = document.querySelector("#settings-install-ollama-button");
   const message = document.querySelector("#ollama-message");
   const progress = document.querySelector("#ollama-progress");
   const progressBar = progress.querySelector("span");
@@ -320,6 +395,8 @@ async function loadOllamaStatus() {
     badge.textContent = status.ready ? "已就绪" : installing ? "正在安装" : failed ? "安装失败" : "未安装";
     badge.className = `badge ${status.ready ? "ready" : failed ? "failed" : "waiting"}`;
     button.disabled = installing || status.ready;
+    settingsButton.disabled = installing;
+    settingsButton.textContent = status.ready ? "检查模型更新" : "安装或升级本地模型";
     button.textContent = status.ready
       ? "本地 AI 已安装"
       : failed
@@ -331,6 +408,13 @@ async function loadOllamaStatus() {
     progressBar.style.width = `${Math.max(0, Math.min(100, status.progress || 0))}%`;
     message.className = failed ? "message error" : "message";
     message.textContent = [status.step, status.message].filter(Boolean).join("：");
+    const tier = status.tiers?.find((item) => item.id === status.resolved_tier);
+    document.querySelector("#ollama-tier-hint").textContent = tier
+      ? `检测到 ${status.memory_gb} GB 内存；当前将使用 ${tier.label} ${tier.model}，预计需 ${tier.disk_gb} GB 可用空间。${tier.description}`
+      : "";
+    if (document.activeElement !== document.querySelector("#ollama-tier")) {
+      document.querySelector("#ollama-tier").value = status.selected_tier || "auto";
+    }
     if (status.restart_required && !ollamaRestarting) {
       ollamaRestarting = true;
       message.textContent = "本地 AI 已准备完成，正在重启软件…";
@@ -348,6 +432,7 @@ async function loadOllamaStatus() {
     badge.textContent = "检查失败";
     badge.className = "badge failed";
     button.disabled = false;
+    settingsButton.disabled = false;
     message.className = "message error";
     message.textContent = errorMessage(error);
   } finally {
@@ -355,21 +440,32 @@ async function loadOllamaStatus() {
   }
 }
 
-document.querySelector("#install-ollama-button").addEventListener("click", async () => {
+async function startOllamaInstall() {
   const button = document.querySelector("#install-ollama-button");
+  const settingsButton = document.querySelector("#settings-install-ollama-button");
   const message = document.querySelector("#ollama-message");
   button.disabled = true;
+  settingsButton.disabled = true;
   message.className = "message";
   message.textContent = "正在启动安装任务…";
   try {
-    await api("/desktop/ollama/install", { method: "POST" });
+    await api("/desktop/ollama/install", {
+      method: "POST",
+      body: JSON.stringify({ tier: document.querySelector("#ollama-tier").value }),
+    });
     await loadOllamaStatus();
   } catch (error) {
     button.disabled = false;
+    settingsButton.disabled = false;
     message.className = "message error";
     message.textContent = errorMessage(error);
   }
-});
+}
+
+document.querySelector("#install-ollama-button").addEventListener("click", startOllamaInstall);
+document
+  .querySelector("#settings-install-ollama-button")
+  .addEventListener("click", startOllamaInstall);
 
 document.querySelector("#model-provider").addEventListener("change", (event) => {
   modelProvider = event.target.value;
@@ -433,6 +529,7 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
     passwordInput.value = "";
     message.textContent = "远程目录已连接，正在执行首次代码分析。";
     await Promise.all([loadRemoteProjects(), loadTasks()]);
+    closeDrawers();
   } catch (error) {
     message.className = "message error";
     message.textContent = errorMessage(error);
@@ -475,6 +572,7 @@ document.querySelector("#project-form").addEventListener("submit", async (event)
     });
     message.textContent = "项目已加入持续分析。";
     await loadTasks();
+    closeDrawers();
   } catch (error) {
     message.className = "message error";
     message.textContent = errorMessage(error);
@@ -482,9 +580,90 @@ document.querySelector("#project-form").addEventListener("submit", async (event)
 });
 
 document.querySelector("#refresh-button").addEventListener("click", loadTasks);
-document.querySelector("#close-result-button").addEventListener("click", () => {
-  document.querySelector("#result-panel").hidden = true;
+document.querySelector("#add-project-button").addEventListener("click", () => {
+  if (!modelConfigured) {
+    openDrawer("settings-drawer");
+    return;
+  }
+  openDrawer("project-drawer");
 });
+document.querySelector("#settings-button").addEventListener("click", () => {
+  openDrawer("settings-drawer");
+});
+document.querySelector("#drawer-backdrop").addEventListener("click", closeDrawers);
+document.querySelectorAll("[data-close-drawer]").forEach((button) => {
+  button.addEventListener("click", closeDrawers);
+});
+document.querySelector("#close-result-button").addEventListener("click", closeDrawers);
+
+function selectSource(remote) {
+  document.querySelector("#source-local-tab").classList.toggle("active", !remote);
+  document.querySelector("#source-remote-tab").classList.toggle("active", remote);
+  document.querySelector("#source-local-panel").hidden = remote;
+  document.querySelector("#source-remote-panel").hidden = !remote;
+}
+
+document.querySelector("#source-local-tab").addEventListener("click", () => selectSource(false));
+document.querySelector("#source-remote-tab").addEventListener("click", () => selectSource(true));
+document.querySelectorAll("#task-filters button").forEach((button) => {
+  button.addEventListener("click", () => {
+    taskFilter = button.dataset.filter;
+    document.querySelectorAll("#task-filters button").forEach((item) => {
+      item.classList.toggle("active", item === button);
+    });
+    renderTaskList();
+  });
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeDrawers();
+});
+
+let updateSample = { bytes: 0, time: performance.now() };
+
+function formatBytes(value) {
+  if (!value) return "0 MB";
+  return `${(value / 1024 / 1024).toFixed(value > 100 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
+async function initializeUpdateProgress() {
+  const panel = document.querySelector("#update-status-panel");
+  const bar = document.querySelector("#update-progress-bar");
+  const text = document.querySelector("#update-progress-text");
+  const cancel = document.querySelector("#cancel-update-button");
+  const listen = window.__TAURI__?.event?.listen;
+  if (!listen) return;
+  await listen("update-progress", (event) => {
+    const progress = event.payload;
+    if (progress.phase === "idle") {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    const now = performance.now();
+    const elapsed = Math.max(1, now - updateSample.time);
+    const speed = ((progress.downloaded - updateSample.bytes) / elapsed) * 1000;
+    updateSample = { bytes: progress.downloaded, time: now };
+    bar.style.width = `${progress.percent ?? (progress.phase === "checking" ? 8 : 20)}%`;
+    const size = progress.total
+      ? `${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}`
+      : "";
+    const rate = speed > 0 && progress.phase === "downloading"
+      ? `${formatBytes(speed)}/s`
+      : "";
+    text.textContent = [progress.message, size, rate].filter(Boolean).join(" · ");
+    cancel.hidden = !progress.canCancel;
+  });
+  cancel.addEventListener("click", async () => {
+    cancel.disabled = true;
+    text.textContent = "正在安全取消下载…";
+    try {
+      await window.__TAURI__.core.invoke("cancel_update");
+    } finally {
+      cancel.disabled = false;
+    }
+  });
+}
+
 document.querySelector("#update-button").addEventListener("click", async () => {
   const button = document.querySelector("#update-button");
   const idleLabel = button.textContent;
@@ -501,13 +680,15 @@ document.querySelector("#update-button").addEventListener("click", async () => {
     if (!window.confirm(`发现新版本 ${version}，是否立即下载并安装？`)) {
       return;
     }
-    button.textContent = `正在安装 ${version}…`;
+    button.textContent = `正在更新 ${version}…`;
     const installedVersion = await invoke("install_update");
     if (!installedVersion) {
       window.alert("更新状态已变化，请重新检查。");
       return;
     }
-    window.alert(`版本 ${installedVersion} 已安装，请重新启动应用。`);
+    document.querySelector("#update-status-panel").hidden = false;
+    document.querySelector("#update-progress-text").textContent =
+      `版本 ${installedVersion} 已安装，正在自动重启…`;
   } catch (error) {
     const detail = errorMessage(error);
     const openDownload = window.confirm(
@@ -527,6 +708,7 @@ document.querySelector("#update-button").addEventListener("click", async () => {
 });
 
 updateModelForm();
+initializeUpdateProgress();
 waitForEngine();
 setInterval(loadTasks, 3000);
 setInterval(loadRemoteProjects, 5000);

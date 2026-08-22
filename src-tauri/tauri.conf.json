@@ -1,9 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CodeInsight-AI",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "identifier": "ai.codeinsight.desktop",
   "build": {
+    "beforeBuildCommand": "npm run desktop:prepare",
     "frontendDist": "../desktop-ui"
   },
   "app": {
@@ -19,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* http://[::1]:*; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* http://[::1]:* ws://127.0.0.1:* ws://localhost:*; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {

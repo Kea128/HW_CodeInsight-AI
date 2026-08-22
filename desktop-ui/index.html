@@ -4,159 +4,181 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CodeInsight-AI</title>
+    <link rel="stylesheet" href="./vendor/xterm.css" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <header>
-      <div>
-        <p class="eyebrow">LOCAL-FIRST CODE INTELLIGENCE</p>
-        <h1>CodeInsight-AI</h1>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark">CI</span>
+        <div>
+          <p class="eyebrow">LOCAL-FIRST CODE INTELLIGENCE</p>
+          <h1>CodeInsight-AI</h1>
+        </div>
       </div>
       <div class="header-actions">
         <span id="engine-status" class="badge waiting">引擎启动中</span>
+        <span id="model-status" class="badge waiting">AI 未检查</span>
+        <button id="add-project-button">添加项目</button>
+        <button id="settings-button" class="secondary">设置</button>
         <button id="update-button" class="secondary">检查更新</button>
+      </div>
+      <div id="update-status-panel" class="header-progress" hidden>
+        <div class="install-progress"><span id="update-progress-bar"></span></div>
+        <span id="update-progress-text">准备更新…</span>
+        <button id="cancel-update-button" class="ghost" hidden>取消</button>
       </div>
     </header>
 
     <main>
-      <section class="hero">
+      <section id="setup-banner" class="setup-banner">
         <div>
-          <h2>持续理解你的代码库</h2>
-          <p>任务状态和逐页检查点保存在本机 SQLite 中。关闭应用或重启机器后，分析会从最近检查点继续。</p>
+          <p class="eyebrow">首次使用</p>
+          <h2>先准备 AI，再开始理解代码</h2>
+          <p>推荐使用本机 Ollama。软件会根据内存自动选择合适的 Qwen 模型，代码无需离开电脑。</p>
         </div>
+        <div class="setup-actions">
+          <span id="ollama-status" class="badge waiting">正在检查</span>
+          <button id="install-ollama-button" type="button">一键安装本地 AI</button>
+        </div>
+        <div id="ollama-progress" class="install-progress" hidden><span></span></div>
+        <p id="ollama-message" class="message"></p>
       </section>
 
-      <section class="panel">
+      <section class="workspace panel">
         <div class="section-heading">
-          <h2>Ubuntu 远程目录</h2>
-          <span class="badge ready">SSH / SFTP</span>
-        </div>
-        <p class="hint">输入服务器信息后，软件会通过 SFTP 将代码安全同步到本机再分析。密码保存在 Windows 凭据管理器，不写入项目数据库。</p>
-        <form id="remote-form">
-          <div class="row">
-            <label>
-              服务器 IP
-              <input id="remote-host" required placeholder="192.168.1.100" autocomplete="off" />
-            </label>
-            <label class="port-field">
-              SSH 端口
-              <input id="remote-port" type="number" min="1" max="65535" value="22" required />
-            </label>
-          </div>
-          <div class="row">
-            <label>
-              服务器用户名
-              <input id="remote-username" required placeholder="ubuntu" autocomplete="username" />
-            </label>
-            <label>
-              服务器密码
-              <input id="remote-password" type="password" required autocomplete="current-password" />
-            </label>
-          </div>
-          <label>
-            远程目录
-            <input id="remote-path" required placeholder="/srv/code/my-project" autocomplete="off" />
-          </label>
-          <label>
-            自动同步间隔（秒）
-            <input id="remote-poll-seconds" type="number" min="10" max="3600" value="60" required />
-          </label>
-          <button type="submit">连接并开始分析</button>
-        </form>
-        <p id="remote-message" class="message"></p>
-        <div id="remote-project-list" class="remote-project-list"></div>
-      </section>
-
-      <section class="panel">
-        <div class="section-heading">
-          <h2>AI 模型设置</h2>
-          <span id="model-status" class="badge waiting">未检查</span>
-        </div>
-        <p class="hint">代码只发送给你选择的模型服务。OpenAI、Google 需要 API Key；Ollama 使用本机服务且无需 Key。</p>
-        <form id="model-form">
-          <div class="row">
-            <label>
-              模型服务
-              <select id="model-provider">
-                <option value="openai">OpenAI</option>
-                <option value="google">Google Gemini</option>
-                <option value="ollama">本机 Ollama</option>
-              </select>
-            </label>
-            <label id="api-key-label">
-              API Key
-              <input id="model-api-key" type="password" autocomplete="off" placeholder="输入后保存在本机" />
-            </label>
-          </div>
-          <button type="submit">保存并重启引擎</button>
-        </form>
-        <p id="model-message" class="message"></p>
-        <div class="local-ai-card">
           <div>
-            <h3>没有 AI 模型？</h3>
-            <p class="hint">一键安装 Ollama、Qwen 代码分析模型和本地向量模型。约需 4 GB 可用空间，无需 API Key。</p>
+            <p class="eyebrow">WORKSPACE</p>
+            <h2>项目与分析</h2>
           </div>
-          <div class="local-ai-actions">
-            <span id="ollama-status" class="badge waiting">正在检查</span>
-            <button id="install-ollama-button" type="button">一键安装本地 AI</button>
+          <div class="segmented" id="task-filters">
+            <button data-filter="all" class="active">全部</button>
+            <button data-filter="active">运行中</button>
+            <button data-filter="completed">已完成</button>
           </div>
-          <div id="ollama-progress" class="install-progress" hidden>
-            <span></span>
+        </div>
+        <div class="workspace-group">
+          <h3>Ubuntu 项目</h3>
+          <div id="remote-project-list" class="remote-project-list">
+            <p class="empty">尚未连接 Ubuntu 项目。</p>
           </div>
-          <p id="ollama-message" class="message"></p>
+        </div>
+        <div class="workspace-group">
+          <div class="section-heading compact">
+            <h3>分析任务</h3>
+            <button id="refresh-button" class="ghost">刷新</button>
+          </div>
+          <div id="task-list" class="task-list">
+            <p class="empty">正在读取任务…</p>
+          </div>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>添加本地项目</h2>
-        <form id="project-form">
-          <label>
-            项目绝对路径
-            <input id="project-path" required placeholder="D:\WorkSpace\my-project" />
-          </label>
-          <div class="row">
-            <label>
-              夜间开始
-              <input id="night-start" type="time" value="22:00" />
-            </label>
-            <label>
-              夜间结束
-              <input id="night-end" type="time" value="07:00" />
-            </label>
-            <label>
-              扫描间隔（秒）
-              <input id="poll-seconds" type="number" min="2" value="15" />
-            </label>
+      <section id="terminal-panel" class="terminal-panel" hidden>
+        <div class="terminal-toolbar">
+          <div id="terminal-tabs" class="terminal-tabs"></div>
+          <div class="terminal-actions">
+            <span id="terminal-status" class="terminal-status">未连接</span>
+            <button id="terminal-reconnect-button" class="ghost" hidden>重连</button>
+            <button id="terminal-collapse-button" class="ghost">收起</button>
           </div>
-          <label class="checkbox">
-            <input id="night-only" type="checkbox" />
-            仅在夜间窗口触发分析
-          </label>
-          <button type="submit">开始持续分析</button>
-        </form>
-        <p id="form-message" class="message"></p>
-      </section>
-
-      <section class="panel">
-        <div class="section-heading">
-          <h2>分析任务</h2>
-          <button id="refresh-button" class="secondary">刷新</button>
         </div>
-        <div id="task-list" class="task-list">
-          <p class="empty">正在读取任务…</p>
-        </div>
-      </section>
-
-      <section id="result-panel" class="panel" hidden>
-        <div class="section-heading">
-          <h2 id="result-title">分析结果</h2>
-          <button id="close-result-button" class="secondary">关闭结果</button>
-        </div>
-        <p id="result-message" class="message"></p>
-        <div id="result-pages" class="result-pages"></div>
+        <div id="terminal-views" class="terminal-views"></div>
       </section>
     </main>
 
+    <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+
+    <aside id="project-drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-header">
+        <div><p class="eyebrow">NEW SOURCE</p><h2>添加项目</h2></div>
+        <button class="drawer-close ghost" data-close-drawer>关闭</button>
+      </div>
+      <div class="segmented drawer-tabs">
+        <button id="source-local-tab" class="active">本地文件夹</button>
+        <button id="source-remote-tab">Ubuntu 远程</button>
+      </div>
+      <div id="source-local-panel">
+        <form id="project-form">
+          <label>项目绝对路径<input id="project-path" required placeholder="D:\WorkSpace\my-project" /></label>
+          <details>
+            <summary>高级调度选项</summary>
+            <div class="row">
+              <label>夜间开始<input id="night-start" type="time" value="22:00" /></label>
+              <label>夜间结束<input id="night-end" type="time" value="07:00" /></label>
+              <label>扫描间隔（秒）<input id="poll-seconds" type="number" min="2" value="15" /></label>
+            </div>
+            <label class="checkbox"><input id="night-only" type="checkbox" />仅在夜间窗口触发分析</label>
+          </details>
+          <button type="submit">开始持续分析</button>
+        </form>
+        <p id="form-message" class="message"></p>
+      </div>
+      <div id="source-remote-panel" hidden>
+        <p class="hint">通过 SFTP 同步代码，并使用相同连接打开图形化终端。密码仅保存在 Windows 凭据管理器。</p>
+        <form id="remote-form">
+          <div class="row">
+            <label>服务器 IP<input id="remote-host" required placeholder="192.168.1.100" autocomplete="off" /></label>
+            <label class="port-field">SSH 端口<input id="remote-port" type="number" min="1" max="65535" value="22" required /></label>
+          </div>
+          <div class="row">
+            <label>用户名<input id="remote-username" required placeholder="ubuntu" autocomplete="username" /></label>
+            <label>密码<input id="remote-password" type="password" required autocomplete="current-password" /></label>
+          </div>
+          <label>远程目录<input id="remote-path" required placeholder="/srv/code/my-project" autocomplete="off" /></label>
+          <details>
+            <summary>同步选项</summary>
+            <label>自动同步间隔（秒）<input id="remote-poll-seconds" type="number" min="10" max="3600" value="60" required /></label>
+          </details>
+          <button type="submit">连接并开始分析</button>
+        </form>
+        <p id="remote-message" class="message"></p>
+      </div>
+    </aside>
+
+    <aside id="settings-drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-header">
+        <div><p class="eyebrow">PREFERENCES</p><h2>AI 与应用设置</h2></div>
+        <button class="drawer-close ghost" data-close-drawer>关闭</button>
+      </div>
+      <form id="model-form">
+        <label>模型服务
+          <select id="model-provider">
+            <option value="ollama">本机 Ollama</option>
+            <option value="openai">OpenAI</option>
+            <option value="google">Google Gemini</option>
+          </select>
+        </label>
+        <label id="api-key-label">API Key<input id="model-api-key" type="password" autocomplete="off" placeholder="输入后保存在本机" /></label>
+        <button type="submit">保存并重启引擎</button>
+      </form>
+      <p id="model-message" class="message"></p>
+      <div class="settings-block">
+        <h3>本地模型质量</h3>
+        <p class="hint">自动模式会根据电脑内存选择 1.7B、4B 或 8B 模型。</p>
+        <label>质量档位
+          <select id="ollama-tier">
+            <option value="auto">自动推荐</option>
+            <option value="minimal">轻量 1.7B</option>
+            <option value="balanced">均衡 4B</option>
+            <option value="quality">高质量 8B</option>
+          </select>
+        </label>
+        <p id="ollama-tier-hint" class="hint"></p>
+        <button id="settings-install-ollama-button" type="button" class="secondary">安装或升级本地模型</button>
+      </div>
+    </aside>
+
+    <aside id="result-panel" class="drawer result-drawer" aria-hidden="true">
+      <div class="drawer-header">
+        <div><p class="eyebrow">ANALYSIS</p><h2 id="result-title">分析结果</h2></div>
+        <button id="close-result-button" class="drawer-close ghost">关闭</button>
+      </div>
+      <p id="result-message" class="message"></p>
+      <div id="result-pages" class="result-pages"></div>
+    </aside>
+
     <script src="./app.js"></script>
+    <script type="module" src="./terminal-ui.js"></script>
   </body>
 </html>

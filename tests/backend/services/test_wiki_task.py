@@ -15,12 +15,12 @@ pytestmark = pytest.mark.asyncio
 
 
 def _req(**kw) -> WikiTask:
-    d = dict(
-        owner="o",
-        repo="r",
-        type="github",
-        repo_url="https://github.com/o/r",
-    )
+    d = {
+        "owner": "o",
+        "repo": "r",
+        "type": "github",
+        "repo_url": "https://github.com/o/r",
+    }
     d.update(kw)
     return WikiTask.from_wiki_request(WikiTaskRequest(**d))
 
@@ -38,6 +38,14 @@ def _structure(n: int = 2) -> WikiStructureModel:
         for i in range(1, n + 1)
     ]
     return WikiStructureModel(id="wiki", title="T", description="D", pages=pages)
+
+
+async def test_ollama_task_uses_selected_desktop_model(monkeypatch):
+    monkeypatch.setattr(wt, "selected_ollama_model", lambda: "qwen3:4b")
+
+    task = _req(provider="ollama", model=None)
+
+    assert task.request.model == "qwen3:4b"
 
 
 async def _wait_active(reg: TaskRegistry, task_id: str) -> None:
@@ -96,12 +104,13 @@ async def test_submit_joins_active_task(monkeypatch):
         await gate.wait()
         task.status = TaskStatus.COMPLETED
 
-
     r1 = await reg.submit(_req(), blocking_run)
     assert r1.created
     await _wait_active(reg, r1.task_id)
 
-    r2 = await reg.submit(_req(language="ja"), blocking_run)  # different settings, same repo
+    r2 = await reg.submit(
+        _req(language="ja"), blocking_run
+    )  # different settings, same repo
     assert r2.joined and not r2.created
     assert r2.task_id == r1.task_id
 

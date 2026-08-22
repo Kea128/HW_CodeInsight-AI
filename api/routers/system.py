@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter
@@ -24,6 +24,12 @@ class DesktopSettingsStatus(BaseModel):
     provider: str
     configured: bool
     restart_required: bool = False
+    ollama_tier: str = "auto"
+    ollama_model: str | None = None
+
+
+class OllamaInstallRequest(BaseModel):
+    tier: Literal["auto", "minimal", "balanced", "quality"] = "auto"
 
 
 def _desktop_settings_status(
@@ -39,6 +45,8 @@ def _desktop_settings_status(
         provider=provider,
         configured=configured,
         restart_required=restart_required,
+        ollama_tier=data.get("ollama_tier", "auto"),
+        ollama_model=data.get("ollama_model"),
     )
 
 
@@ -47,7 +55,7 @@ async def health_check():
     """Health check endpoint for Docker and monitoring"""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "service": "codeinsight-engine",
     }
 
@@ -69,8 +77,8 @@ def get_ollama_install_status():
 
 
 @router.post("/desktop/ollama/install")
-def install_ollama():
-    return installer.start()
+def install_ollama(request: OllamaInstallRequest | None = None):
+    return installer.start(request.tier if request else "auto")
 
 
 @router.get("/lang/config")
@@ -100,7 +108,7 @@ async def get_model_config():
         for provider_id, provider_config in configs["providers"].items():
             models = []
             # Add models from config
-            for model_id in provider_config["models"].keys():
+            for model_id in provider_config["models"]:
                 # Get a more user-friendly display name if possible
                 models.append(Model(id=model_id, name=model_id))
 
@@ -120,8 +128,8 @@ async def get_model_config():
         config = ModelConfig(providers=providers, defaultProvider=default_provider)
         return config
 
-    except Exception as e:
-        logger.error(f"Error creating model configuration: {str(e)}")
+    except Exception as e:  # noqa: BLE001 - preserve API fallback on malformed config
+        logger.error(f"Error creating model configuration: {e!s}")
         # Return some default configuration in case of error
         return ModelConfig(
             providers=[

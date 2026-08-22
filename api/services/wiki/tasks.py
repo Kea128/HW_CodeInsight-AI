@@ -1,27 +1,29 @@
+import asyncio
 import os
 import re
-import asyncio
-from typing import Callable, Any
-from collections.abc import Coroutine
 import time
-from pydantic import BaseModel, Field, computed_field, ConfigDict
+from collections.abc import Callable, Coroutine
+from typing import Any
 
-from api.utils import deepwiki_root
+from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+from api.desktop_settings import selected_ollama_model
+from api.logger import get_logger
+from api.rag import repo_index_exist
+from api.repository import Repo
 from api.schemas import (
-    ChatMessage,
     ChatCompletionRequest,
+    ChatMessage,
+    RepoInfo,
+    TaskStatus,
     WikiCacheData,
-    WikiTaskRequest,
+    WikiPage,
     WikiStructureModel,
+    WikiTaskRequest,
     WikiTaskStatus,
     WikiTaskSubmitResult,
     WikiTaskSummary,
-    WikiPage,
-    RepoInfo,
-    TaskStatus,
 )
-from api.repository import Repo
-from api.rag import repo_index_exist
 from api.services.research import prepare_repo_index, research_chat
 from api.services.wiki import (
     save_wiki_cache,
@@ -32,23 +34,27 @@ from api.services.wiki.content import (
     generate_file_url,
     post_process_wiki_content,
 )
-
+from api.services.wiki.prompts import (
+    build_page_prompt,
+    build_structure_prompt,
+)
+from api.services.wiki.store import WikiTaskStore
 from api.services.wiki.structure import (
     build_fallback_structure,
     detect_default_branch,
     parse_wiki_structure,
     read_repo_file_tree,
 )
-
-from api.services.wiki.prompts import (
-    build_page_prompt,
-    build_structure_prompt,
-)
-from api.services.wiki.store import WikiTaskStore
-
-from api.logger import get_logger
+from api.utils import deepwiki_root
 
 logger = get_logger(__name__)
+
+
+def _resolve_desktop_model(request: WikiTaskRequest) -> WikiTaskRequest:
+    if request.provider != "ollama" or request.model:
+        return request
+    model = os.environ.get("CODEINSIGHT_OLLAMA_MODEL") or selected_ollama_model()
+    return request.model_copy(update={"model": model}) if model else request
 
 
 def _env_int(name, default: int) -> int:
@@ -103,7 +109,7 @@ class WikiTask(BaseModel):
     @classmethod
     def from_wiki_request(cls, request: WikiTaskRequest) -> "WikiTask":
         return cls(
-            request=request,
+            request=_resolve_desktop_model(request),
         )
 
     @classmethod
@@ -111,7 +117,9 @@ class WikiTask(BaseModel):
         structure = snapshot.get("wiki_structure")
         generated = snapshot.get("generated_pages", {})
         return cls(
-            request=WikiTaskRequest.model_validate(snapshot["request"]),
+            request=_resolve_desktop_model(
+                WikiTaskRequest.model_validate(snapshot["request"])
+            ),
             status=TaskStatus(snapshot["status"]),
             pages_done=snapshot.get("pages_done", len(generated)),
             current_page_ids=[],
@@ -403,7 +411,8 @@ async def generate_repo_wiki(task: WikiTask) -> None:
         task.persist("generating")
         pages = await _generate_pages(task, structure)
         if pages and all(
-            page.content.startswith("Error generating content:") for page in pages.values()
+            page.content.startswith("Error generating content:")
+            for page in pages.values()
         ):
             raise RuntimeError("All wiki pages failed to generate")
 

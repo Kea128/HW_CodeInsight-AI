@@ -1,6 +1,6 @@
 {
   "name": "codeinsight-ai",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "private": true,
   "description": "Local-first continuous AI code understanding for desktop and VS Code.",
   "scripts": {
@@ -8,9 +8,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "desktop:prepare": "node scripts/prepare-desktop.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "mermaid": "^11.4.1",
     "next": "^15.5.22",
     "next-intl": "^4.1.0",

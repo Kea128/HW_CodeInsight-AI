@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import os
 import posixpath
 import shutil
 import stat
-import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import keyring
 import paramiko
 
 from api.logger import get_logger
 from api.schemas import RemoteProjectRequest, WikiTaskRequest
+from api.services.ssh_client import (
+    CredentialStore,
+    RemoteProjectError,
+    connect_ssh,
+    friendly_connection_error,
+    remote_data_root,
+)
 
 if TYPE_CHECKING:
     from api.services.continuous import ContinuousAnalysisManager
@@ -26,7 +30,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-CREDENTIAL_SERVICE = "CodeInsight-AI.Remote"
 SYNC_LOOP_SECONDS = 2
 MAX_REMOTE_FILE_BYTES = 100 * 1024 * 1024
 IGNORED_DIRS = {
@@ -50,31 +53,6 @@ WINDOWS_RESERVED_NAMES = {
 }
 
 
-class RemoteProjectError(RuntimeError):
-    pass
-
-
-class CredentialStore:
-    def set(self, credential_id: str, password: str) -> None:
-        keyring.set_password(CREDENTIAL_SERVICE, credential_id, password)
-
-    def get(self, credential_id: str) -> str | None:
-        return keyring.get_password(CREDENTIAL_SERVICE, credential_id)
-
-    def delete(self, credential_id: str) -> None:
-        try:
-            keyring.delete_password(CREDENTIAL_SERVICE, credential_id)
-        except keyring.errors.KeyringError:
-            pass
-
-
-def remote_data_root() -> Path:
-    root = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir()))
-    path = root / "CodeInsight-AI"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def _project_id(host: str, port: int, username: str, remote_path: str) -> str:
     identity = f"{host.lower()}:{port}:{username}:{remote_path}".encode()
     return f"remote-{hashlib.sha256(identity).hexdigest()[:20]}"
@@ -94,49 +72,14 @@ def _safe_owner(username: str, host: str) -> str:
     )
 
 
-def _fingerprint(key: paramiko.PKey) -> str:
-    digest = hashlib.sha256(key.asbytes()).digest()
-    return f"SHA256:{base64.b64encode(digest).decode().rstrip('=')}"
-
-
 def _friendly_connection_error(error: Exception) -> RemoteProjectError:
-    if isinstance(error, paramiko.AuthenticationException):
-        return RemoteProjectError("Ubuntu 用户名或密码错误")
-    if isinstance(error, paramiko.BadHostKeyException):
-        return RemoteProjectError("服务器主机密钥已变化，已拒绝连接")
-    if isinstance(error, (TimeoutError, paramiko.SSHException)):
-        return RemoteProjectError(f"SSH 连接失败：{error}")
-    if isinstance(error, OSError):
-        return RemoteProjectError(f"无法连接 Ubuntu 服务器：{error}")
-    return RemoteProjectError(f"远程同步失败：{error}")
+    return friendly_connection_error(error)
 
 
 def _connect(
     project: dict[str, Any], password: str, known_hosts_path: Path
 ) -> tuple[paramiko.SSHClient, str]:
-    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
-    known_hosts_path.touch(exist_ok=True)
-    client = paramiko.SSHClient()
-    client.load_host_keys(str(known_hosts_path))
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        client.connect(
-            hostname=project["host"],
-            port=project["port"],
-            username=project["username"],
-            password=password,
-            look_for_keys=False,
-            allow_agent=False,
-            timeout=15,
-            auth_timeout=15,
-            banner_timeout=15,
-        )
-        key = client.get_transport().get_remote_server_key()
-        client.save_host_keys(str(known_hosts_path))
-        return client, _fingerprint(key)
-    except Exception as error:
-        client.close()
-        raise _friendly_connection_error(error) from error
+    return connect_ssh(project, password, known_hosts_path)
 
 
 def _valid_remote_name(name: str) -> bool:

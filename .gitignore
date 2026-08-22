@@ -70,6 +70,7 @@ next-env.d.ts
 certs/
 
 # Desktop release artifacts
+/desktop-ui/vendor/
 /src-tauri/target/
 /src-tauri/binaries/*
 !/src-tauri/binaries/.gitkeep
