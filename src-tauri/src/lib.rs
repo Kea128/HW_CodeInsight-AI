@@ -236,7 +236,10 @@ async fn download_url_with_windows(
     Ok(bytes)
 }
 
-async fn download_github_asset_with_windows(url: String) -> Result<Vec<u8>, String> {
+async fn download_github_asset_with_windows(
+    url: String,
+    accept: &'static str,
+) -> Result<Vec<u8>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -246,11 +249,12 @@ async fn download_github_asset_with_windows(url: String) -> Result<Vec<u8>, Stri
             "codeinsight-manifest-{}-{nonce}.json",
             std::process::id()
         ));
-        let script = "$ProgressPreference='SilentlyContinue';Invoke-WebRequest -UseBasicParsing -TimeoutSec 12 -Headers @{Accept='application/octet-stream';'User-Agent'='CodeInsight-AI'} -Uri $env:CODEINSIGHT_UPDATE_URL -OutFile $env:CODEINSIGHT_UPDATE_PATH";
+        let script = "$ProgressPreference='SilentlyContinue';Invoke-WebRequest -UseBasicParsing -TimeoutSec 12 -Headers @{Accept=$env:CODEINSIGHT_ACCEPT;'User-Agent'='CodeInsight-AI'} -Uri $env:CODEINSIGHT_UPDATE_URL -OutFile $env:CODEINSIGHT_UPDATE_PATH";
         let output = Command::new("powershell.exe")
             .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
             .arg(script)
             .env("CODEINSIGHT_UPDATE_URL", url)
+            .env("CODEINSIGHT_ACCEPT", accept)
             .env(
                 "CODEINSIGHT_UPDATE_PATH",
                 path.to_string_lossy().into_owned(),
@@ -283,7 +287,11 @@ async fn download_with_windows(
 
 async fn check_with_windows(app: &tauri::AppHandle) -> Result<Option<ManualUpdate>, String> {
     let release_bytes =
-        download_github_asset_with_windows(UPDATE_RELEASE_API_URL.to_string()).await?;
+        download_github_asset_with_windows(
+            UPDATE_RELEASE_API_URL.to_string(),
+            "application/vnd.github+json",
+        )
+        .await?;
     let release: GithubRelease = serde_json::from_slice(&release_bytes)
         .map_err(|error| describe_error("GitHub Release 响应无效", error))?;
     let manifest_asset = release
@@ -291,7 +299,9 @@ async fn check_with_windows(app: &tauri::AppHandle) -> Result<Option<ManualUpdat
         .into_iter()
         .find(|asset| asset.name == "latest.json")
         .ok_or_else(|| "最新 Release 缺少更新清单".to_string())?;
-    let bytes = download_github_asset_with_windows(manifest_asset.url).await?;
+    let bytes =
+        download_github_asset_with_windows(manifest_asset.url, "application/octet-stream")
+            .await?;
     let manifest: UpdateManifest = serde_json::from_slice(&bytes)
         .map_err(|error| describe_error("Windows 更新清单无效", error))?;
     let current = semver::Version::parse(&app.package_info().version.to_string())
