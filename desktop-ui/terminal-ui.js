@@ -64,9 +64,10 @@ async function connectSession(session) {
   setStatus("正在连接…");
   reconnectButton.hidden = true;
   const token = await getDesktopToken();
-  const socket = new WebSocket(
-    `ws://127.0.0.1:8001/ws/terminal?token=${encodeURIComponent(token)}`,
-  );
+  const apiBase = localStorage.getItem("codeinsight-api-base") || "http://127.0.0.1:8001";
+  const socketUrl = new URL("/ws/terminal", apiBase);
+  socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(socketUrl);
   socket.binaryType = "arraybuffer";
   session.socket = socket;
 
@@ -74,6 +75,7 @@ async function connectSession(session) {
     socket.send(
       JSON.stringify({
         type: "open",
+        token,
         project_id: session.project.id,
         columns: session.terminal.cols,
         rows: session.terminal.rows,
@@ -82,7 +84,13 @@ async function connectSession(session) {
   });
   socket.addEventListener("message", (event) => {
     if (typeof event.data === "string") {
-      const message = JSON.parse(event.data);
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        session.terminal.writeln("\r\n\x1b[31m终端服务器返回了无效消息\x1b[0m");
+        return;
+      }
       if (message.type === "ready") {
         session.connected = true;
         session.terminal.writeln("\x1b[32m已安全连接 Ubuntu 终端\x1b[0m");
@@ -177,6 +185,11 @@ function createSession(project) {
 
 window.addEventListener("codeinsight:open-terminal", (event) => {
   createSession(event.detail);
+});
+window.addEventListener("codeinsight:close-project-terminals", (event) => {
+  [...sessions.values()]
+    .filter((session) => session.project.id === event.detail)
+    .forEach((session) => closeSession(session.id));
 });
 window.addEventListener("resize", () => {
   const session = sessions.get(activeId);

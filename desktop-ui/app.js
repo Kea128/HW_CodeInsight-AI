@@ -11,6 +11,8 @@ let ollamaStatusLoading = false;
 let latestTasks = [];
 let taskFilter = "all";
 let desktopToken = null;
+let restartDeferred = false;
+let confirmedRemoteFingerprint = null;
 
 function errorMessage(error) {
   if (typeof error === "string" && error.trim()) return error;
@@ -51,6 +53,12 @@ function closeDrawers() {
 
 function updateSetupBanner() {
   document.querySelector("#setup-banner").hidden = modelConfigured;
+  document.querySelector("#remote-ai-notice").hidden = modelConfigured;
+}
+
+function remoteFormDirty() {
+  return ["remote-host", "remote-username", "remote-password", "remote-path"]
+    .some((id) => document.querySelector(`#${id}`).value.trim());
 }
 
 async function api(path, options = {}) {
@@ -268,18 +276,37 @@ async function loadTasks() {
 }
 
 function formatSyncTime(timestamp) {
-  return timestamp ? new Date(timestamp).toLocaleString("zh-CN") : "尚未同步";
+  if (!timestamp) return "尚未同步";
+  const milliseconds = timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
+  return new Date(milliseconds).toLocaleString("zh-CN");
 }
 
 function remoteActionButton(label, action, className = "secondary") {
   const button = document.createElement("button");
   button.textContent = label;
   button.className = className;
-  button.addEventListener("click", action);
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await action();
+    } catch (error) {
+      window.alert(errorMessage(error));
+    } finally {
+      button.disabled = false;
+    }
+  });
   return button;
 }
 
 function renderRemoteProject(project) {
+  const stageLabels = {
+    saved: "已保存",
+    connecting: "正在连接",
+    syncing: "正在同步",
+    ready_for_analysis: "可分析",
+    analyzing: "正在分析",
+    failed: "操作失败",
+  };
   const card = document.createElement("article");
   card.className = "remote-project";
   const detail = document.createElement("div");
@@ -287,15 +314,18 @@ function renderRemoteProject(project) {
   title.textContent = `${project.username}@${project.host}:${project.remote_path}`;
   const status = document.createElement("p");
   status.textContent = project.last_error
-    ? `同步失败：${project.last_error}`
-    : `最近同步：${formatSyncTime(project.last_sync_at)} · 每 ${project.poll_seconds} 秒`;
+    ? `${stageLabels[project.stage] || project.stage}：${project.last_error}`
+    : `${stageLabels[project.stage] || "已保存"} · 最近同步：${formatSyncTime(project.last_sync_at)} · 每 ${project.poll_seconds} 秒`;
   status.className = project.last_error ? "remote-error" : "";
   const fingerprint = document.createElement("p");
   fingerprint.className = "fingerprint";
   fingerprint.textContent = project.host_fingerprint
     ? `服务器指纹：${project.host_fingerprint}`
     : "服务器指纹：等待首次连接";
-  detail.append(title, status, fingerprint);
+  const syncStats = document.createElement("p");
+  syncStats.className = "fingerprint";
+  syncStats.textContent = `已扫描 ${project.files_seen || 0} 个文件 · 排除 ${project.files_excluded || 0} · 超大 ${project.files_oversize || 0} · 跳过链接 ${project.symlinks_skipped || 0}`;
+  detail.append(title, status, fingerprint, syncStats);
 
   const actions = document.createElement("div");
   actions.className = "task-actions";
@@ -318,6 +348,26 @@ function renderRemoteProject(project) {
       syncButton.disabled = false;
     }
   });
+  const operationButton = project.stage === "failed"
+    ? remoteActionButton("重试", async () => {
+      await api(`/remote/projects/${encodeURIComponent(project.id)}/retry`, { method: "POST" });
+      await loadRemoteProjects();
+    })
+    : project.stage === "ready_for_analysis"
+      ? remoteActionButton("开始 AI 分析", async () => {
+        if (!modelConfigured) {
+          openDrawer("settings-drawer");
+          return;
+        }
+        await api(`/remote/projects/${encodeURIComponent(project.id)}/analyze`, { method: "POST" });
+        await loadRemoteProjects();
+      })
+      : ["connecting", "syncing", "analyzing"].includes(project.stage)
+        ? remoteActionButton("取消", async () => {
+          await api(`/remote/projects/${encodeURIComponent(project.id)}/cancel`, { method: "POST" });
+          await loadRemoteProjects();
+        }, "danger")
+        : null;
   const deleteButton = remoteActionButton(
     "删除",
     async () => {
@@ -327,6 +377,9 @@ function renderRemoteProject(project) {
         await api(`/remote/projects/${encodeURIComponent(project.id)}`, {
           method: "DELETE",
         });
+        window.dispatchEvent(
+          new CustomEvent("codeinsight:close-project-terminals", { detail: project.id }),
+        );
         await Promise.all([loadRemoteProjects(), loadTasks()]);
       } catch (error) {
         window.alert(errorMessage(error));
@@ -335,7 +388,9 @@ function renderRemoteProject(project) {
     },
     "danger",
   );
-  actions.append(terminalButton, syncButton, deleteButton);
+  actions.append(terminalButton, syncButton);
+  if (operationButton) actions.append(operationButton);
+  actions.append(deleteButton);
   card.append(detail, actions);
   return card;
 }
@@ -425,6 +480,12 @@ async function loadOllamaStatus() {
       document.querySelector("#ollama-tier").value = status.selected_tier || "auto";
     }
     if (status.restart_required && !ollamaRestarting) {
+      if (document.querySelector("#project-drawer").classList.contains("open") || remoteFormDirty()) {
+        restartDeferred = true;
+        message.textContent = "本地 AI 已准备完成；为避免丢失 Ubuntu 表单，已延迟重启。";
+        document.querySelector("#deferred-restart-button").hidden = false;
+        return;
+      }
       ollamaRestarting = true;
       message.textContent = "本地 AI 已准备完成，正在重启软件…";
       setTimeout(async () => {
@@ -478,7 +539,6 @@ document
 
 document.querySelector("#model-provider").addEventListener("change", (event) => {
   modelProvider = event.target.value;
-  modelConfigured = false;
   updateModelForm();
   const status = document.querySelector("#model-status");
   status.textContent = "待保存";
@@ -526,17 +586,30 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
   };
   try {
     message.className = "message";
-    if (!modelConfigured) {
-      throw new Error("请先在“AI 模型设置”中配置模型服务");
+    const fingerprintKey = `${body.host}:${body.port}`;
+    if (confirmedRemoteFingerprint?.key !== fingerprintKey) {
+      message.textContent = "正在读取服务器主机指纹（尚未发送用户名和密码）…";
+      const probe = await api("/remote/fingerprint", {
+        method: "POST",
+        body: JSON.stringify({ host: body.host, port: body.port }),
+      });
+      const approved = window.confirm(
+        `首次连接需要确认 Ubuntu 主机身份：\n\n${probe.algorithm}\n${probe.fingerprint}\n\n请与服务器管理员核对。确认信任并继续吗？`,
+      );
+      if (!approved) throw new Error("已取消：未确认服务器主机指纹");
+      confirmedRemoteFingerprint = { key: fingerprintKey, value: probe.fingerprint };
     }
-    message.textContent = "正在连接 Ubuntu 并安全同步代码，首次同步可能需要几分钟…";
+    body.host_fingerprint = confirmedRemoteFingerprint.value;
+    body.analyze_now = modelConfigured;
+    message.textContent = "配置已保存，正在后台连接并同步代码…";
     await api("/remote/projects", {
       method: "POST",
       body: JSON.stringify(body),
-      timeout: 600000,
     });
     passwordInput.value = "";
-    message.textContent = "远程目录已连接，正在执行首次代码分析。";
+    message.textContent = modelConfigured
+      ? "远程项目已保存，正在后台同步；完成后自动分析。"
+      : "远程项目已保存，正在后台同步；AI 就绪后可开始分析。";
     await Promise.all([loadRemoteProjects(), loadTasks()]);
     closeDrawers();
   } catch (error) {
@@ -590,11 +663,12 @@ document.querySelector("#project-form").addEventListener("submit", async (event)
 
 document.querySelector("#refresh-button").addEventListener("click", loadTasks);
 document.querySelector("#add-project-button").addEventListener("click", () => {
-  if (!modelConfigured) {
-    openDrawer("settings-drawer");
-    return;
-  }
   openDrawer("project-drawer");
+  selectSource(localStorage.getItem("codeinsight-source-tab") === "remote");
+});
+document.querySelector("#connect-ubuntu-button").addEventListener("click", () => {
+  openDrawer("project-drawer");
+  selectSource(true);
 });
 document.querySelector("#settings-button").addEventListener("click", () => {
   openDrawer("settings-drawer");
@@ -610,10 +684,16 @@ function selectSource(remote) {
   document.querySelector("#source-remote-tab").classList.toggle("active", remote);
   document.querySelector("#source-local-panel").hidden = remote;
   document.querySelector("#source-remote-panel").hidden = !remote;
+  localStorage.setItem("codeinsight-source-tab", remote ? "remote" : "local");
+  if (remote) requestAnimationFrame(() => document.querySelector("#remote-host").focus());
 }
 
 document.querySelector("#source-local-tab").addEventListener("click", () => selectSource(false));
 document.querySelector("#source-remote-tab").addEventListener("click", () => selectSource(true));
+document.querySelector("#deferred-restart-button").addEventListener("click", async () => {
+  if (!restartDeferred) return;
+  await window.__TAURI__.core.invoke("restart_app");
+});
 document.querySelectorAll("#task-filters button").forEach((button) => {
   button.addEventListener("click", () => {
     taskFilter = button.dataset.filter;
