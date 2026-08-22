@@ -24,6 +24,9 @@ const UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyB
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const UPDATE_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const GITHUB_CHECK_ATTEMPTS: usize = 3;
+const GITHUB_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(250);
+const GITHUB_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
 
 struct DaemonProcess(Mutex<Option<CommandChild>>);
 struct DesktopSessionToken(String);
@@ -146,8 +149,99 @@ fn stop_daemon(app: &tauri::AppHandle) {
     }
 }
 
+fn spawn_daemon(app: &tauri::AppHandle, desktop_token: &str) -> Result<CommandChild, String> {
+    app.shell()
+        .sidecar("codeinsight-daemon")
+        .map(|command| command.env("CODEINSIGHT_DESKTOP_TOKEN", desktop_token))
+        .and_then(|command| command.spawn())
+        .map(|(_events, child)| child)
+        .map_err(|error| describe_error("分析服务启动失败", error))
+}
+
+fn restore_daemon(app: &tauri::AppHandle) {
+    let token = app.state::<DesktopSessionToken>().0.clone();
+    match spawn_daemon(app, &token) {
+        Ok(child) => {
+            if let Ok(mut process) = app.state::<DaemonProcess>().0.lock() {
+                if process.is_none() {
+                    *process = Some(child);
+                } else {
+                    let _ = child.kill();
+                }
+            }
+        }
+        Err(error) => eprintln!("{error}"),
+    }
+}
+
 fn describe_error(context: &str, error: impl std::fmt::Display) -> String {
     format!("{context}: {error}")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum GithubDownloadError {
+    Http(u16),
+    Timeout,
+    Network,
+    Process(String),
+    Read(String),
+}
+
+impl GithubDownloadError {
+    fn should_retry(&self) -> bool {
+        matches!(
+            self,
+            Self::Timeout | Self::Network | Self::Http(429) | Self::Http(500..=599)
+        )
+    }
+
+    fn localized_summary(&self) -> String {
+        match self {
+            Self::Http(403) => {
+                "GitHub 拒绝了更新检查请求（HTTP 403），请稍后重试".to_string()
+            }
+            Self::Http(415) => "GitHub 更新接口不接受当前请求（HTTP 415）".to_string(),
+            Self::Http(429) => {
+                "GitHub 更新检查请求过于频繁（HTTP 429），请稍后重试".to_string()
+            }
+            Self::Http(status) => format!("GitHub 更新检查失败（HTTP {status}）"),
+            Self::Timeout => "GitHub 更新检查超时，请检查网络后重试".to_string(),
+            Self::Network => "GitHub 更新检查网络连接失败，请稍后重试".to_string(),
+            Self::Process(detail) => describe_error("无法启动 GitHub API 更新检查", detail),
+            Self::Read(detail) => describe_error("无法读取更新清单", detail),
+        }
+    }
+}
+
+fn github_retry_delay(retry_index: usize) -> Duration {
+    GITHUB_RETRY_INITIAL_DELAY
+        .saturating_mul(1_u32.checked_shl(retry_index as u32).unwrap_or(u32::MAX))
+        .min(GITHUB_RETRY_MAX_DELAY)
+}
+
+fn parse_github_download_error(output: &str) -> GithubDownloadError {
+    for line in output.lines().map(str::trim) {
+        if let Some(status) = line.strip_prefix("ERROR HTTP ") {
+            if let Ok(status) = status.parse() {
+                return GithubDownloadError::Http(status);
+            }
+        }
+        if line == "ERROR TIMEOUT" {
+            return GithubDownloadError::Timeout;
+        }
+    }
+    GithubDownloadError::Network
+}
+
+fn cleanup_bits_job(job_id: &str) {
+    let script = "Get-BitsTransfer -JobId $env:CODEINSIGHT_BITS_JOB_ID -ErrorAction SilentlyContinue | Remove-BitsTransfer -Confirm:$false -ErrorAction SilentlyContinue";
+    let _ = Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+        .arg(script)
+        .env("CODEINSIGHT_BITS_JOB_ID", job_id)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 fn verify_update_signature(data: &[u8], encoded_signature: &str) -> Result<(), String> {
@@ -182,7 +276,7 @@ async fn download_url_with_windows(
         ));
         let path_string = path.to_string_lossy().into_owned();
         let _ = std::fs::remove_file(&path);
-        let script = "$ErrorActionPreference='Stop';$job=Start-BitsTransfer -Source $env:CODEINSIGHT_UPDATE_URL -Destination $env:CODEINSIGHT_UPDATE_PATH -Asynchronous;try{while($job.JobState -in @('Queued','Connecting','Transferring')){$job=Get-BitsTransfer -JobId $job.JobId;if($job.BytesTotal -gt 0){Write-Output \"PROGRESS $($job.BytesTransferred) $($job.BytesTotal)\"};Start-Sleep -Milliseconds 300};if($job.JobState -ne 'Transferred'){throw \"BITS download failed: $($job.JobState)\"};Complete-BitsTransfer -BitsJob $job}catch{if($job){Remove-BitsTransfer -BitsJob $job -Confirm:$false -ErrorAction SilentlyContinue};throw}";
+        let script = "$ErrorActionPreference='Stop';$job=Start-BitsTransfer -Source $env:CODEINSIGHT_UPDATE_URL -Destination $env:CODEINSIGHT_UPDATE_PATH -Asynchronous;Write-Output \"JOB $($job.JobId)\";try{while($job.JobState -in @('Queued','Connecting','Transferring')){$job=Get-BitsTransfer -JobId $job.JobId;Write-Output \"PROGRESS $($job.BytesTransferred) $($job.BytesTotal)\";Start-Sleep -Milliseconds 300};if($job.JobState -ne 'Transferred'){throw \"BITS_STATE_$($job.JobState)\"};Complete-BitsTransfer -BitsJob $job}catch{if($job){Remove-BitsTransfer -BitsJob $job -Confirm:$false -ErrorAction SilentlyContinue};Write-Output 'ERROR BITS';exit 1}";
         let mut child = Command::new("powershell.exe")
             .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
             .arg(script)
@@ -192,12 +286,27 @@ async fn download_url_with_windows(
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| describe_error("无法启动 Windows 下载服务", error))?;
+        let started_at = Instant::now();
+        let mut bits_job_id = None;
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if app.state::<UpdateControl>().0.load(Ordering::Relaxed) {
+                if let Some(job_id) = line.strip_prefix("JOB ") {
+                    bits_job_id = Some(job_id.trim().to_string());
+                }
+                let cancelled = app.state::<UpdateControl>().0.load(Ordering::Relaxed);
+                let timed_out = started_at.elapsed() >= UPDATE_DOWNLOAD_TIMEOUT;
+                if cancelled || timed_out {
                     let _ = child.kill();
+                    let _ = child.wait();
+                    if let Some(job_id) = bits_job_id.as_deref() {
+                        cleanup_bits_job(job_id);
+                    }
                     let _ = std::fs::remove_file(&path);
-                    return Err("更新下载已取消".to_string());
+                    return Err(if cancelled {
+                        "更新下载已取消".to_string()
+                    } else {
+                        "更新下载超时，请检查网络后重试".to_string()
+                    });
                 }
                 if report_progress {
                     let values: Vec<_> = line.split_whitespace().collect();
@@ -209,7 +318,7 @@ async fn download_url_with_windows(
                                 &app,
                                 "downloading",
                                 downloaded,
-                                Some(total),
+                                (total > 0).then_some(total),
                                 true,
                                 "正在通过 Windows 后台下载更新…",
                             );
@@ -222,9 +331,11 @@ async fn download_url_with_windows(
             .wait_with_output()
             .map_err(|error| describe_error("Windows 下载服务异常", error))?;
         if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr);
+            if let Some(job_id) = bits_job_id.as_deref() {
+                cleanup_bits_job(job_id);
+            }
             let _ = std::fs::remove_file(&path);
-            return Err(format!("Windows 下载服务失败: {}", detail.trim()));
+            return Err("Windows 后台下载失败，请检查网络后重试".to_string());
         }
         let result = std::fs::read(&path)
             .map_err(|error| describe_error("无法读取已下载更新包", error));
@@ -241,35 +352,49 @@ async fn download_github_asset_with_windows(
     accept: &'static str,
 ) -> Result<Vec<u8>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "codeinsight-manifest-{}-{nonce}.json",
-            std::process::id()
-        ));
-        let script = "$ProgressPreference='SilentlyContinue';Invoke-WebRequest -UseBasicParsing -TimeoutSec 12 -Headers @{Accept=$env:CODEINSIGHT_ACCEPT;'User-Agent'='CodeInsight-AI'} -Uri $env:CODEINSIGHT_UPDATE_URL -OutFile $env:CODEINSIGHT_UPDATE_PATH";
-        let output = Command::new("powershell.exe")
-            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
-            .arg(script)
-            .env("CODEINSIGHT_UPDATE_URL", url)
-            .env("CODEINSIGHT_ACCEPT", accept)
-            .env(
-                "CODEINSIGHT_UPDATE_PATH",
-                path.to_string_lossy().into_owned(),
-            )
-            .output()
-            .map_err(|error| describe_error("无法启动 GitHub API 更新检查", error))?;
-        if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr);
+        let mut last_error = GithubDownloadError::Network;
+        for attempt in 0..GITHUB_CHECK_ATTEMPTS {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "codeinsight-manifest-{}-{nonce}-{attempt}.json",
+                std::process::id()
+            ));
+            let script = "$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 12 -Headers @{Accept=$env:CODEINSIGHT_ACCEPT;'User-Agent'='CodeInsight-AI'} -Uri $env:CODEINSIGHT_UPDATE_URL -OutFile $env:CODEINSIGHT_UPDATE_PATH}catch{$status=0;if($_.Exception.Response -and $_.Exception.Response.StatusCode){$status=[int]$_.Exception.Response.StatusCode};if($status -gt 0){Write-Output \"ERROR HTTP $status\"}elseif($_.Exception.Status -eq [System.Net.WebExceptionStatus]::Timeout -or $_.Exception.Message -match 'timed out|timeout|超时'){Write-Output 'ERROR TIMEOUT'}else{Write-Output 'ERROR NETWORK'};exit 1}";
+            let output = Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+                .arg(script)
+                .env("CODEINSIGHT_UPDATE_URL", &url)
+                .env("CODEINSIGHT_ACCEPT", accept)
+                .env(
+                    "CODEINSIGHT_UPDATE_PATH",
+                    path.to_string_lossy().into_owned(),
+                )
+                .output()
+                .map_err(|error| GithubDownloadError::Process(error.to_string()));
+            let output = match output {
+                Ok(output) => output,
+                Err(error) => {
+                    last_error = error;
+                    break;
+                }
+            };
+            if output.status.success() {
+                let result = std::fs::read(&path)
+                    .map_err(|error| GithubDownloadError::Read(error.to_string()));
+                let _ = std::fs::remove_file(&path);
+                return result.map_err(|error| error.localized_summary());
+            }
             let _ = std::fs::remove_file(&path);
-            return Err(format!("GitHub API 更新检查失败: {}", detail.trim()));
+            last_error = parse_github_download_error(&String::from_utf8_lossy(&output.stdout));
+            if attempt + 1 >= GITHUB_CHECK_ATTEMPTS || !last_error.should_retry() {
+                break;
+            }
+            std::thread::sleep(github_retry_delay(attempt));
         }
-        let result =
-            std::fs::read(&path).map_err(|error| describe_error("无法读取更新清单", error));
-        let _ = std::fs::remove_file(&path);
-        result
+        Err(last_error.localized_summary())
     })
     .await
     .map_err(|error| describe_error("GitHub API 更新任务异常", error))?
@@ -338,35 +463,40 @@ async fn install_with_windows(
     let bytes = download_url_with_windows(app.clone(), update.url, true).await?;
     verify_update_signature(&bytes, &update.signature)?;
     let version = update.version;
+    let executable =
+        std::env::current_exe().map_err(|error| describe_error("无法定位当前应用", error))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "codeinsight-update-{}-{nonce}.msi",
+        std::process::id()
+    ));
+    let package_size = bytes.len() as u64;
+    std::fs::write(&path, &bytes)
+        .map_err(|error| describe_error("无法保存 Windows 更新包", error))?;
     emit_update_progress(
         &app,
         "installing",
-        bytes.len() as u64,
-        Some(bytes.len() as u64),
+        package_size,
+        Some(package_size),
         false,
         "正在安装更新并准备重启…",
     );
     stop_daemon(&app);
-    let executable =
-        std::env::current_exe().map_err(|error| describe_error("无法定位当前应用", error))?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "codeinsight-update-{}-{nonce}.msi",
-            std::process::id()
-        ));
-        std::fs::write(&path, bytes)
-            .map_err(|error| describe_error("无法保存 Windows 更新包", error))?;
-        let script = "$ErrorActionPreference='Stop';while(Get-Process -Id $env:CODEINSIGHT_PARENT_PID -ErrorAction SilentlyContinue){Start-Sleep -Milliseconds 200};$arguments=@('/i',('\"'+$env:CODEINSIGHT_UPDATE_PATH+'\"'),'/passive','/norestart');$installer=Start-Process msiexec.exe -ArgumentList $arguments -Wait -PassThru;if($installer.ExitCode -notin @(0,3010)){exit $installer.ExitCode};Remove-Item -LiteralPath $env:CODEINSIGHT_UPDATE_PATH -Force -ErrorAction SilentlyContinue;Start-Process -FilePath $env:CODEINSIGHT_APP_PATH";
+    let installer_path = path.clone();
+    let install_result = tauri::async_runtime::spawn_blocking(move || {
+        let script = "$ErrorActionPreference='Stop';while(Get-Process -Id $env:CODEINSIGHT_PARENT_PID -ErrorAction SilentlyContinue){Start-Sleep -Milliseconds 200};$exitCode=1;try{$arguments=@('/i',('\"'+$env:CODEINSIGHT_UPDATE_PATH+'\"'),'/passive','/norestart');$installer=Start-Process msiexec.exe -ArgumentList $arguments -Wait -PassThru;$exitCode=$installer.ExitCode}finally{Remove-Item -LiteralPath $env:CODEINSIGHT_UPDATE_PATH -Force -ErrorAction SilentlyContinue;Start-Process -FilePath $env:CODEINSIGHT_APP_PATH};if($exitCode -notin @(0,3010)){exit $exitCode}";
         let mut command = Command::new("powershell.exe");
         command
             .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
             .arg(script)
             .env("CODEINSIGHT_PARENT_PID", std::process::id().to_string())
-            .env("CODEINSIGHT_UPDATE_PATH", path.to_string_lossy().into_owned())
+            .env(
+                "CODEINSIGHT_UPDATE_PATH",
+                installer_path.to_string_lossy().into_owned(),
+            )
             .env("CODEINSIGHT_APP_PATH", executable);
         #[cfg(target_os = "windows")]
         {
@@ -378,7 +508,13 @@ async fn install_with_windows(
         Ok::<(), String>(())
     })
     .await
-    .map_err(|error| describe_error("Windows 安装任务异常", error))??;
+    .map_err(|error| describe_error("Windows 安装任务异常", error))
+    .and_then(|result| result);
+    if let Err(error) = install_result {
+        let _ = std::fs::remove_file(&path);
+        restore_daemon(&app);
+        return Err(error);
+    }
     let exit_app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(600)).await;
@@ -502,7 +638,7 @@ async fn install_update(app: tauri::AppHandle) -> Result<Option<String>, String>
                     "downloading",
                     downloaded,
                     content_length,
-                    true,
+                    false,
                     "正在下载更新…",
                 );
             },
@@ -526,9 +662,10 @@ async fn install_update(app: tauri::AppHandle) -> Result<Option<String>, String>
         "下载完成，正在安装并自动重启…",
     );
     stop_daemon(&app);
-    update
-        .install(bytes)
-        .map_err(|error| describe_error("更新包安装失败", error))?;
+    if let Err(error) = update.install(bytes) {
+        restore_daemon(&app);
+        return Err(describe_error("更新包安装失败", error));
+    }
     Ok(Some(version))
 }
 
@@ -576,15 +713,8 @@ pub fn run() {
             app.manage(UpdateCheckCache(Mutex::new(None)));
             app.manage(UpdateControl(AtomicBool::new(false)));
             let desktop_token = generate_desktop_token();
-            let process = match app
-                .shell()
-                .sidecar("codeinsight-daemon")
-                .map(|command| {
-                    command.env("CODEINSIGHT_DESKTOP_TOKEN", desktop_token.clone())
-                })
-                .and_then(|command| command.spawn())
-            {
-                Ok((_events, child)) => Some(child),
+            let process = match spawn_daemon(app.handle(), &desktop_token) {
+                Ok(child) => Some(child),
                 Err(error) => {
                     eprintln!("analysis sidecar failed to start: {error}");
                     None
@@ -606,4 +736,41 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_errors_are_compact_and_localized() {
+        assert_eq!(
+            parse_github_download_error("ERROR HTTP 403\r\n").localized_summary(),
+            "GitHub 拒绝了更新检查请求（HTTP 403），请稍后重试"
+        );
+        assert_eq!(
+            parse_github_download_error("ERROR HTTP 415\n").localized_summary(),
+            "GitHub 更新接口不接受当前请求（HTTP 415）"
+        );
+        assert_eq!(
+            parse_github_download_error("ERROR HTTP 429\n").localized_summary(),
+            "GitHub 更新检查请求过于频繁（HTTP 429），请稍后重试"
+        );
+        assert_eq!(
+            parse_github_download_error("ERROR TIMEOUT\n").localized_summary(),
+            "GitHub 更新检查超时，请检查网络后重试"
+        );
+    }
+
+    #[test]
+    fn github_retry_policy_is_bounded() {
+        assert_eq!(github_retry_delay(0), Duration::from_millis(250));
+        assert_eq!(github_retry_delay(1), Duration::from_millis(500));
+        assert_eq!(github_retry_delay(2), Duration::from_secs(1));
+        assert_eq!(github_retry_delay(10), Duration::from_secs(1));
+        assert!(GithubDownloadError::Http(429).should_retry());
+        assert!(GithubDownloadError::Timeout.should_retry());
+        assert!(!GithubDownloadError::Http(403).should_retry());
+        assert!(!GithubDownloadError::Http(415).should_retry());
+    }
 }
