@@ -1,3 +1,4 @@
+import asyncio
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -239,6 +240,85 @@ async def test_create_stores_password_only_in_credentials(monkeypatch, tmp_path)
     assert "password" not in project
     assert "credential_id" not in status
     assert continuous.requests[0][0].repo_url == project["local_path"]
+
+
+@pytest.mark.asyncio
+async def test_first_sync_without_ai_stays_ready_for_analysis(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(
+        "api.services.remote._sync_project",
+        lambda project, password, known_hosts, cancel_event=None: (
+            MirrorResult(files_seen=2, changed=True),
+            "SHA256:test",
+        ),
+    )
+    store = FakeStore()
+    continuous = FakeContinuous()
+    manager = RemoteSyncManager(
+        continuous, store=store, credentials=FakeCredentials()
+    )
+
+    status = await manager.create(
+        RemoteProjectRequest(
+            host="10.0.0.8",
+            username="ubuntu",
+            password="server-secret",
+            remote_path="/srv/code/demo",
+            host_fingerprint="SHA256:test",
+            analyze_now=False,
+        )
+    )
+    await manager._active[status["id"]]
+
+    assert store.remote_projects[status["id"]]["stage"] == "ready_for_analysis"
+    assert continuous.requests == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_manual_sync_only_starts_one_task(tmp_path):
+    store = FakeStore()
+    credentials = FakeCredentials()
+    manager = RemoteSyncManager(
+        FakeContinuous(), store=store, credentials=credentials
+    )
+    project_id = "remote-one"
+    store.remote_projects[project_id] = {
+        "id": project_id,
+        "host": "10.0.0.8",
+        "port": 22,
+        "username": "ubuntu",
+        "remote_path": "/srv/code",
+        "local_path": str(tmp_path / "mirror"),
+        "credential_id": project_id,
+        "provider": "ollama",
+        "model": None,
+        "language": "zh",
+        "host_fingerprint": "SHA256:test",
+        "enabled": True,
+        "poll_seconds": 60,
+        "last_sync_at": None,
+        "last_error": None,
+        "stage": "saved",
+        "files_seen": 0,
+        "files_excluded": 0,
+        "files_oversize": 0,
+        "symlinks_skipped": 0,
+    }
+    started = 0
+    release = asyncio.Event()
+
+    async def initial_sync(identifier, *, analyze_when_ready):
+        nonlocal started
+        started += 1
+        await release.wait()
+
+    manager._initial_sync = initial_sync
+    await asyncio.gather(manager.sync(project_id), manager.sync(project_id))
+    await asyncio.sleep(0)
+
+    assert started == 1
+    release.set()
+    await manager._active[project_id]
 
 
 @pytest.mark.asyncio

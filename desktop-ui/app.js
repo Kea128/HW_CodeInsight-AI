@@ -8,11 +8,13 @@ let modelConfigured = false;
 let modelProvider = localStorage.getItem("codeinsight-model-provider") || "openai";
 let ollamaRestarting = false;
 let ollamaStatusLoading = false;
+let ollamaReady = false;
 let latestTasks = [];
 let taskFilter = "all";
 let desktopToken = null;
 let restartDeferred = false;
 let confirmedRemoteFingerprint = null;
+let remoteFormEdited = false;
 
 function errorMessage(error) {
   if (typeof error === "string" && error.trim()) return error;
@@ -57,8 +59,7 @@ function updateSetupBanner() {
 }
 
 function remoteFormDirty() {
-  return ["remote-host", "remote-username", "remote-password", "remote-path"]
-    .some((id) => document.querySelector(`#${id}`).value.trim());
+  return remoteFormEdited;
 }
 
 async function api(path, options = {}) {
@@ -479,8 +480,14 @@ async function loadOllamaStatus() {
     if (document.activeElement !== document.querySelector("#ollama-tier")) {
       document.querySelector("#ollama-tier").value = status.selected_tier || "auto";
     }
+    if (status.ready && !ollamaReady) {
+      ollamaReady = true;
+      await loadModelSettings();
+    } else if (!status.ready) {
+      ollamaReady = false;
+    }
     if (status.restart_required && !ollamaRestarting) {
-      if (document.querySelector("#project-drawer").classList.contains("open") || remoteFormDirty()) {
+      if (remoteFormDirty()) {
         restartDeferred = true;
         message.textContent = "本地 AI 已准备完成；为避免丢失 Ubuntu 表单，已延迟重启。";
         document.querySelector("#deferred-restart-button").hidden = false;
@@ -607,6 +614,7 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
       body: JSON.stringify(body),
     });
     passwordInput.value = "";
+    remoteFormEdited = false;
     message.textContent = modelConfigured
       ? "远程项目已保存，正在后台同步；完成后自动分析。"
       : "远程项目已保存，正在后台同步；AI 就绪后可开始分析。";
@@ -616,6 +624,9 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
     message.className = "message error";
     message.textContent = errorMessage(error);
   }
+});
+document.querySelector("#remote-form").addEventListener("input", () => {
+  remoteFormEdited = true;
 });
 
 document.querySelector("#project-form").addEventListener("submit", async (event) => {

@@ -666,6 +666,11 @@ async fn install_update(app: tauri::AppHandle) -> Result<Option<String>, String>
         restore_daemon(&app);
         return Err(describe_error("更新包安装失败", error));
     }
+    let restart_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        restart_app.request_restart();
+    });
     Ok(Some(version))
 }
 

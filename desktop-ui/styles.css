@@ -103,9 +103,10 @@ summary { cursor: pointer; color: #70d8ff; }
 .terminal-tabs { display: flex; min-width: 0; height: 100%; overflow-x: auto; }
 .terminal-tab { display: flex; gap: 8px; align-items: center; max-width: 230px; padding: 0 12px; border-right: 1px solid #27364a; color: #8fa3bd; cursor: pointer; font-size: 11px; white-space: nowrap; }
 .terminal-tab.active { color: #eef7ff; background: #182438; }
-.terminal-tab .close { color: #74879e; font-size: 14px; }
+.terminal-tab .close { padding: 0; color: #74879e; background: transparent; font-size: 14px; line-height: 1; }
 .terminal-actions { display: flex; align-items: center; padding-right: 6px; }
 .terminal-status { color: var(--muted); font-size: 10px; }
+.terminal-status.failed { color: #ff9ca4; }
 .terminal-views { height: calc(100% - 39px); }
 .terminal-view { width: 100%; height: 100%; padding: 7px; }
 .terminal-view .xterm { height: 100%; }

@@ -43,6 +43,7 @@ function activateSession(id) {
 function closeSession(id) {
   const session = sessions.get(id);
   if (!session) return;
+  session.connectionGeneration += 1;
   session.socket?.close();
   session.terminal.dispose();
   session.tab.remove();
@@ -59,6 +60,8 @@ function closeSession(id) {
 }
 
 async function connectSession(session) {
+  const generation = session.connectionGeneration + 1;
+  session.connectionGeneration = generation;
   session.socket?.close();
   session.connected = false;
   setStatus("正在连接…");
@@ -72,6 +75,7 @@ async function connectSession(session) {
   session.socket = socket;
 
   socket.addEventListener("open", () => {
+    if (session.connectionGeneration !== generation) return;
     socket.send(
       JSON.stringify({
         type: "open",
@@ -83,6 +87,7 @@ async function connectSession(session) {
     );
   });
   socket.addEventListener("message", (event) => {
+    if (session.connectionGeneration !== generation) return;
     if (typeof event.data === "string") {
       let message;
       try {
@@ -104,6 +109,7 @@ async function connectSession(session) {
     session.terminal.write(new Uint8Array(event.data));
   });
   socket.addEventListener("close", () => {
+    if (session.connectionGeneration !== generation) return;
     session.connected = false;
     session.terminal.writeln("\r\n\x1b[33m连接已断开，可点击重连。\x1b[0m");
     if (activeId === session.id) {
@@ -112,11 +118,19 @@ async function connectSession(session) {
     }
   });
   socket.addEventListener("error", () => {
+    if (session.connectionGeneration !== generation) return;
     if (activeId === session.id) setStatus("终端连接错误", true);
   });
 }
 
 function createSession(project) {
+  const existing = [...sessions.values()].find(
+    (session) => session.project.id === project.id,
+  );
+  if (existing) {
+    activateSession(existing.id);
+    return;
+  }
   const id = crypto.randomUUID();
   const terminal = new Terminal({
     cursorBlink: true,
@@ -139,8 +153,10 @@ function createSession(project) {
   tab.className = "terminal-tab";
   const label = document.createElement("span");
   label.textContent = `${project.username}@${project.host}`;
-  const close = document.createElement("span");
+  const close = document.createElement("button");
+  close.type = "button";
   close.className = "close";
+  close.setAttribute("aria-label", "关闭终端标签");
   close.textContent = "×";
   close.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -156,7 +172,17 @@ function createSession(project) {
   viewsElement.append(view);
   terminal.open(view);
 
-  const session = { id, project, terminal, fit, tab, view, socket: null, connected: false };
+  const session = {
+    id,
+    project,
+    terminal,
+    fit,
+    tab,
+    view,
+    socket: null,
+    connected: false,
+    connectionGeneration: 0,
+  };
   sessions.set(id, session);
   terminal.onData((data) => {
     if (session.socket?.readyState === WebSocket.OPEN && session.connected) {

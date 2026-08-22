@@ -490,17 +490,19 @@ class RemoteSyncManager:
             return self._status(project)
 
     async def sync(self, project_id: str) -> dict[str, Any]:
-        project = self.store.get_remote_project(project_id)
-        if not project:
-            raise KeyError(project_id)
-        active = self._active.get(project_id)
-        if active and not active.done():
+        lock = self._locks.setdefault(project_id, asyncio.Lock())
+        async with lock:
+            project = self.store.get_remote_project(project_id)
+            if not project:
+                raise KeyError(project_id)
+            active = self._active.get(project_id)
+            if active and not active.done():
+                return self._status(project)
+            self._save_stage(project, "connecting")
+            self._active[project_id] = asyncio.create_task(
+                self._initial_sync(project_id, analyze_when_ready=True)
+            )
             return self._status(project)
-        self._save_stage(project, "connecting")
-        self._active[project_id] = asyncio.create_task(
-            self._initial_sync(project_id, analyze_when_ready=True)
-        )
-        return self._status(project)
 
     async def _sync(
         self, project_id: str, *, analyze_when_ready: bool
@@ -537,7 +539,7 @@ class RemoteSyncManager:
                 continuous_project = self._continuous_project(project)
                 if not continuous_project and analyze_when_ready:
                     await self._analyze_locked(project)
-                elif result.changed:
+                elif continuous_project and result.changed:
                     continuous_project["last_scan_at"] = 0
                     self.store.save_continuous_project(continuous_project)
                     self._save_stage(project, "analyzing")
@@ -570,12 +572,14 @@ class RemoteSyncManager:
             if not project:
                 return False
             continuous_project = self._continuous_project(project)
+            deleted = self.store.delete_remote_project(project_id)
+            if not deleted:
+                return False
             if continuous_project:
                 self.continuous.remove(continuous_project["id"])
             for callback in self._remove_listeners:
                 callback(project_id)
             self.credentials.delete(project["credential_id"])
-            deleted = self.store.delete_remote_project(project_id)
             shutil.rmtree(project["local_path"], ignore_errors=True)
             self._failures.pop(project_id, None)
             self._retry_after.pop(project_id, None)
