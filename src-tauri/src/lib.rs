@@ -315,7 +315,7 @@ async fn install_with_windows(
         command
             .spawn()
             .map_err(|error| describe_error("无法启动 Windows 安装程序", error))?;
-        Ok(())
+        Ok::<(), String>(())
     })
     .await
     .map_err(|error| describe_error("Windows 安装任务异常", error))??;
