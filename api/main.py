@@ -1,15 +1,15 @@
 import logging
 import os
+import secrets
 
-from dotenv import load_dotenv
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 # Load environment variables from .env file
-# ruff: noqa: E402
 load_dotenv()
-# ruff: noqa: E402
 
 from api.logger import get_logger, setup_logging
 from api.routers import (
@@ -71,6 +71,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_desktop_token(request: Request, call_next):
+    expected = os.environ.get("CODEINSIGHT_DESKTOP_TOKEN")
+    if (
+        expected
+        and request.method != "OPTIONS"
+        and request.url.path not in {"/", "/health"}
+        and not secrets.compare_digest(
+            expected, request.headers.get("X-CodeInsight-Token", "")
+        )
+    ):
+        return JSONResponse(status_code=401, content={"detail": "桌面会话无效"})
+    return await call_next(request)
+
 
 for module in (
     system,

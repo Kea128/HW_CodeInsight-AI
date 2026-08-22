@@ -10,6 +10,7 @@ let ollamaRestarting = false;
 let ollamaStatusLoading = false;
 let latestTasks = [];
 let taskFilter = "all";
+let desktopToken = null;
 
 function errorMessage(error) {
   if (typeof error === "string" && error.trim()) return error;
@@ -57,9 +58,17 @@ async function api(path, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!desktopToken && invoke) {
+      desktopToken = await invoke("desktop_session_token");
+    }
     const response = await fetch(`${apiBase}${path}`, {
       ...requestOptions,
-      headers: { "Content-Type": "application/json", ...(headers || {}) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(desktopToken ? { "X-CodeInsight-Token": desktopToken } : {}),
+        ...(headers || {}),
+      },
       signal: controller.signal,
     });
     if (!response.ok) {

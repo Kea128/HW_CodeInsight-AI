@@ -63,6 +63,18 @@ jobs:
           New-Item -ItemType Directory -Force src-tauri/binaries
           Copy-Item api/dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
 
+      - name: Validate desktop host
+        shell: pwsh
+        run: |
+          $output = & cargo check --manifest-path src-tauri/Cargo.toml 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Write-Output
+          if ($exitCode -ne 0) {
+            $annotation = ($output -join "`n").Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Output "::error title=Desktop host compilation failed::$annotation"
+            exit $exitCode
+          }
+
       - name: Build and publish signed installers
         uses: tauri-apps/tauri-action@v0
         env:
