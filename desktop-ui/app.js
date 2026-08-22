@@ -6,6 +6,8 @@ let tasksLoading = false;
 let remoteProjectsLoading = false;
 let modelConfigured = false;
 let modelProvider = localStorage.getItem("codeinsight-model-provider") || "openai";
+let ollamaRestarting = false;
+let ollamaStatusLoading = false;
 
 function errorMessage(error) {
   if (typeof error === "string" && error.trim()) return error;
@@ -62,6 +64,7 @@ async function waitForEngine() {
       await loadTasks();
       await loadRemoteProjects();
       await loadModelSettings();
+      await loadOllamaStatus();
       return;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -302,6 +305,72 @@ async function loadModelSettings() {
   }
 }
 
+async function loadOllamaStatus() {
+  if (ollamaStatusLoading) return;
+  ollamaStatusLoading = true;
+  const badge = document.querySelector("#ollama-status");
+  const button = document.querySelector("#install-ollama-button");
+  const message = document.querySelector("#ollama-message");
+  const progress = document.querySelector("#ollama-progress");
+  const progressBar = progress.querySelector("span");
+  try {
+    const status = await api("/desktop/ollama/status");
+    const installing = status.state === "installing";
+    const failed = status.state === "error";
+    badge.textContent = status.ready ? "已就绪" : installing ? "正在安装" : failed ? "安装失败" : "未安装";
+    badge.className = `badge ${status.ready ? "ready" : failed ? "failed" : "waiting"}`;
+    button.disabled = installing || status.ready;
+    button.textContent = status.ready
+      ? "本地 AI 已安装"
+      : failed
+        ? "重试安装"
+        : status.installed
+          ? "安装所需模型"
+          : "一键安装本地 AI";
+    progress.hidden = !installing;
+    progressBar.style.width = `${Math.max(0, Math.min(100, status.progress || 0))}%`;
+    message.className = failed ? "message error" : "message";
+    message.textContent = [status.step, status.message].filter(Boolean).join("：");
+    if (status.restart_required && !ollamaRestarting) {
+      ollamaRestarting = true;
+      message.textContent = "本地 AI 已准备完成，正在重启软件…";
+      setTimeout(async () => {
+        try {
+          await window.__TAURI__.core.invoke("restart_app");
+        } catch (error) {
+          ollamaRestarting = false;
+          message.className = "message error";
+          message.textContent = `自动重启失败：${errorMessage(error)}，请手动重启软件。`;
+        }
+      }, 800);
+    }
+  } catch (error) {
+    badge.textContent = "检查失败";
+    badge.className = "badge failed";
+    button.disabled = false;
+    message.className = "message error";
+    message.textContent = errorMessage(error);
+  } finally {
+    ollamaStatusLoading = false;
+  }
+}
+
+document.querySelector("#install-ollama-button").addEventListener("click", async () => {
+  const button = document.querySelector("#install-ollama-button");
+  const message = document.querySelector("#ollama-message");
+  button.disabled = true;
+  message.className = "message";
+  message.textContent = "正在启动安装任务…";
+  try {
+    await api("/desktop/ollama/install", { method: "POST" });
+    await loadOllamaStatus();
+  } catch (error) {
+    button.disabled = false;
+    message.className = "message error";
+    message.textContent = errorMessage(error);
+  }
+});
+
 document.querySelector("#model-provider").addEventListener("change", (event) => {
   modelProvider = event.target.value;
   modelConfigured = false;
@@ -461,3 +530,4 @@ updateModelForm();
 waitForEngine();
 setInterval(loadTasks, 3000);
 setInterval(loadRemoteProjects, 5000);
+setInterval(loadOllamaStatus, 2000);

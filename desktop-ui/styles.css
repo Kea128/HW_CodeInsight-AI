@@ -51,6 +51,14 @@ button:disabled { cursor: wait; opacity: .55; }
 .progress { height: 5px; margin-top: 10px; overflow: hidden; border-radius: 9px; background: #202a39; }
 .progress span { display: block; height: 100%; background: #63d2ff; }
 .message.error { color: #ff9ca4; }
+.local-ai-card { display: grid; grid-template-columns: 1fr auto; gap: 14px 20px; margin-top: 20px; padding: 18px; border: 1px solid #31537d; border-radius: 12px; background: rgba(20, 46, 78, .34); }
+.local-ai-card h3 { margin: 0 0 6px; font-size: 16px; }
+.local-ai-card .hint { margin: 0; }
+.local-ai-actions { display: flex; gap: 10px; align-items: center; }
+.local-ai-actions button { white-space: nowrap; }
+.install-progress { grid-column: 1 / -1; height: 7px; overflow: hidden; border-radius: 9px; background: #202a39; }
+.install-progress span { display: block; width: 0; height: 100%; background: #63d2ff; transition: width .3s ease; }
+.local-ai-card > .message { grid-column: 1 / -1; }
 .remote-project-list { display: grid; gap: 10px; margin-top: 18px; }
 .remote-project { display: grid; grid-template-columns: 1fr auto; gap: 14px; padding: 16px; border: 1px solid #283346; border-radius: 12px; background: #0c121c; }
 .remote-project h3 { margin: 0 0 7px; font-size: 15px; overflow-wrap: anywhere; }
@@ -65,5 +73,7 @@ button:disabled { cursor: wait; opacity: .55; }
   header, main { width: min(100% - 24px, 1120px); }
   .row, header { align-items: stretch; flex-direction: column; }
   .task, .remote-project { grid-template-columns: 1fr; }
+  .local-ai-card { grid-template-columns: 1fr; }
+  .local-ai-actions { align-items: stretch; flex-direction: column; }
   .row > .port-field { flex-basis: auto; }
 }

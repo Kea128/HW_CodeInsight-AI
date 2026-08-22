@@ -91,6 +91,20 @@
           <button type="submit">保存并重启引擎</button>
         </form>
         <p id="model-message" class="message"></p>
+        <div class="local-ai-card">
+          <div>
+            <h3>没有 AI 模型？</h3>
+            <p class="hint">一键安装 Ollama、Qwen 代码分析模型和本地向量模型。约需 4 GB 可用空间，无需 API Key。</p>
+          </div>
+          <div class="local-ai-actions">
+            <span id="ollama-status" class="badge waiting">正在检查</span>
+            <button id="install-ollama-button" type="button">一键安装本地 AI</button>
+          </div>
+          <div id="ollama-progress" class="install-progress" hidden>
+            <span></span>
+          </div>
+          <p id="ollama-message" class="message"></p>
+        </div>
       </section>
 
       <section class="panel">

@@ -8,6 +8,7 @@ from api.config import configs
 from api.desktop_settings import load_desktop_settings, save_desktop_settings
 from api.logger import get_logger
 from api.schemas import Model, ModelConfig, Provider
+from api.services.ollama_installer import installer
 
 logger = get_logger(__name__)
 
@@ -29,7 +30,11 @@ def _desktop_settings_status(
     data: dict[str, str], *, restart_required: bool = False
 ) -> DesktopSettingsStatus:
     provider = data.get("provider", "openai")
-    configured = provider == "ollama" or bool(data.get(f"{provider}_api_key"))
+    configured = (
+        installer.status()["ready"]
+        if provider == "ollama"
+        else bool(data.get(f"{provider}_api_key"))
+    )
     return DesktopSettingsStatus(
         provider=provider,
         configured=configured,
@@ -56,6 +61,16 @@ async def get_desktop_settings():
 async def update_desktop_settings(request: DesktopSettingsRequest):
     data = save_desktop_settings(request.provider, request.api_key)
     return _desktop_settings_status(data, restart_required=True)
+
+
+@router.get("/desktop/ollama/status")
+def get_ollama_install_status():
+    return installer.status()
+
+
+@router.post("/desktop/ollama/install")
+def install_ollama():
+    return installer.start()
 
 
 @router.get("/lang/config")
