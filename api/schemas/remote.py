@@ -13,6 +13,8 @@ class RemoteProjectRequest(BaseModel):
     provider: Literal["openai", "google", "ollama"] = "ollama"
     model: str | None = None
     language: str = "zh"
+    host_fingerprint: str | None = Field(default=None, min_length=8, max_length=256)
+    analyze_now: bool = True
 
     @field_validator("host", "username")
     @classmethod
@@ -43,3 +45,36 @@ class RemoteProjectStatus(BaseModel):
     last_sync_at: int | None = None
     last_error: str | None = None
     last_task_id: str | None = None
+    stage: Literal[
+        "saved",
+        "connecting",
+        "syncing",
+        "ready_for_analysis",
+        "analyzing",
+        "failed",
+    ] = "saved"
+    files_seen: int = 0
+    files_excluded: int = 0
+    files_oversize: int = 0
+    symlinks_skipped: int = 0
+
+
+class SSHFingerprintProbeRequest(BaseModel):
+    host: str = Field(min_length=1, max_length=253)
+    port: int = Field(22, ge=1, le=65535)
+
+    @field_validator("host")
+    @classmethod
+    def strip_host(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value must not be empty")
+        return stripped
+
+
+class SSHFingerprintProbeResponse(BaseModel):
+    host: str
+    port: int
+    fingerprint: str
+    algorithm: str
+    confirmation_required: bool = True

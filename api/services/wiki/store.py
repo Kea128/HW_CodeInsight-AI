@@ -13,7 +13,7 @@ from typing import Any
 from api.utils import deepwiki_root
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def default_database_path() -> str:
@@ -108,10 +108,30 @@ class WikiTaskStore:
                     poll_seconds INTEGER NOT NULL DEFAULT 60,
                     last_sync_at INTEGER,
                     last_error TEXT,
+                    stage TEXT NOT NULL DEFAULT 'saved',
+                    files_seen INTEGER NOT NULL DEFAULT 0,
+                    files_excluded INTEGER NOT NULL DEFAULT 0,
+                    files_oversize INTEGER NOT NULL DEFAULT 0,
+                    symlinks_skipped INTEGER NOT NULL DEFAULT 0,
                     updated_at INTEGER NOT NULL
                 );
                 """
             )
+            remote_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(remote_projects)")
+            }
+            for name, definition in {
+                "stage": "TEXT NOT NULL DEFAULT 'saved'",
+                "files_seen": "INTEGER NOT NULL DEFAULT 0",
+                "files_excluded": "INTEGER NOT NULL DEFAULT 0",
+                "files_oversize": "INTEGER NOT NULL DEFAULT 0",
+                "symlinks_skipped": "INTEGER NOT NULL DEFAULT 0",
+            }.items():
+                if name not in remote_columns:
+                    connection.execute(
+                        f"ALTER TABLE remote_projects ADD COLUMN {name} {definition}"
+                    )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, int(time.time() * 1000)),
@@ -273,8 +293,10 @@ class WikiTaskStore:
                 INSERT INTO remote_projects (
                     id, host, port, username, remote_path, local_path,
                     credential_id, provider, model, language, host_fingerprint,
-                    enabled, poll_seconds, last_sync_at, last_error, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    enabled, poll_seconds, last_sync_at, last_error, stage,
+                    files_seen, files_excluded, files_oversize, symlinks_skipped,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     host=excluded.host,
                     port=excluded.port,
@@ -290,6 +312,11 @@ class WikiTaskStore:
                     poll_seconds=excluded.poll_seconds,
                     last_sync_at=excluded.last_sync_at,
                     last_error=excluded.last_error,
+                    stage=excluded.stage,
+                    files_seen=excluded.files_seen,
+                    files_excluded=excluded.files_excluded,
+                    files_oversize=excluded.files_oversize,
+                    symlinks_skipped=excluded.symlinks_skipped,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -308,6 +335,11 @@ class WikiTaskStore:
                     project.get("poll_seconds", 60),
                     project.get("last_sync_at"),
                     project.get("last_error"),
+                    project.get("stage", "saved"),
+                    project.get("files_seen", 0),
+                    project.get("files_excluded", 0),
+                    project.get("files_oversize", 0),
+                    project.get("symlinks_skipped", 0),
                     now,
                 ),
             )
@@ -351,6 +383,11 @@ class WikiTaskStore:
             "poll_seconds": row["poll_seconds"],
             "last_sync_at": row["last_sync_at"],
             "last_error": row["last_error"],
+            "stage": row["stage"],
+            "files_seen": row["files_seen"],
+            "files_excluded": row["files_excluded"],
+            "files_oversize": row["files_oversize"],
+            "symlinks_skipped": row["symlinks_skipped"],
         }
 
     @staticmethod

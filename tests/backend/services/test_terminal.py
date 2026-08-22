@@ -112,3 +112,33 @@ def test_terminal_authorization_requires_token_and_desktop_origin():
     assert not authorize("secret", "secret", "https://evil.example", production=True)
     assert authorize("secret", "secret", "http://localhost:1420", production=False)
     assert not authorize("secret", "secret", "http://localhost:1420", production=True)
+
+
+def test_terminal_rejects_invalid_resize_and_closes_project(monkeypatch, tmp_path):
+    channel = FakeChannel()
+    client = FakeClient(channel)
+    monkeypatch.setattr(
+        terminal,
+        "connect_ssh",
+        lambda project, password, known_hosts: (client, "SHA256:test"),
+    )
+    manager = terminal.TerminalSessionManager(
+        FakeStore(), credentials=FakeCredentials()
+    )
+    manager.known_hosts_path = tmp_path / "known_hosts"
+    session = manager.open(
+        "remote-one",
+        origin="http://tauri.localhost",
+        token="desktop-secret",
+    )
+
+    try:
+        session.resize(10, 1000)
+    except terminal.RemoteProjectError as error:
+        assert "尺寸" in str(error)
+    else:
+        raise AssertionError("invalid terminal dimensions were accepted")
+
+    manager.close_project("remote-one")
+    assert channel.closed is True
+    assert client.closed is True

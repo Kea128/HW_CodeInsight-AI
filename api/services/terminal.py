@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import secrets
 import shlex
 import threading
@@ -52,6 +53,8 @@ class TerminalSession:
     client: paramiko.SSHClient
     channel: paramiko.Channel
     last_activity: float
+    origin: str
+    token_digest: str
 
     def receive(self) -> bytes:
         try:
@@ -69,9 +72,10 @@ class TerminalSession:
         self.last_activity = time.monotonic()
 
     def resize(self, columns: int, rows: int) -> None:
+        columns, rows = validate_terminal_size(columns, rows)
         self.channel.resize_pty(
-            width=max(20, min(columns, 500)),
-            height=max(5, min(rows, 200)),
+            width=columns,
+            height=rows,
         )
         self.last_activity = time.monotonic()
 
@@ -92,10 +96,35 @@ class TerminalSessionManager:
         self._sessions: dict[str, TerminalSession] = {}
         self._lock = threading.RLock()
         self._opening = 0
+        self._reaper: asyncio.Task | None = None
+
+    def start(self) -> None:
+        if self._reaper is None or self._reaper.done():
+            self._reaper = asyncio.create_task(self._reap_idle())
+
+    async def stop(self) -> None:
+        if self._reaper:
+            self._reaper.cancel()
+            await asyncio.gather(self._reaper, return_exceptions=True)
+            self._reaper = None
+        self.close_all()
+
+    async def _reap_idle(self) -> None:
+        while True:
+            await asyncio.sleep(min(60, max(1, SESSION_IDLE_SECONDS // 4)))
+            with self._lock:
+                self._remove_expired_locked()
 
     def open(
-        self, project_id: str, columns: int = 120, rows: int = 32
+        self,
+        project_id: str,
+        columns: int = 120,
+        rows: int = 32,
+        *,
+        origin: str = "",
+        token: str = "",
     ) -> TerminalSession:
+        columns, rows = validate_terminal_size(columns, rows)
         with self._lock:
             self._remove_expired_locked()
             if len(self._sessions) + self._opening >= MAX_TERMINAL_SESSIONS:
@@ -113,8 +142,8 @@ class TerminalSessionManager:
             try:
                 channel = client.invoke_shell(
                     term="xterm-256color",
-                    width=max(20, min(columns, 500)),
-                    height=max(5, min(rows, 200)),
+                    width=columns,
+                    height=rows,
                 )
                 channel.settimeout(0.25)
                 channel.sendall(
@@ -136,6 +165,8 @@ class TerminalSessionManager:
             client=client,
             channel=channel,
             last_activity=time.monotonic(),
+            origin=origin,
+            token_digest=hashlib.sha256(token.encode()).hexdigest(),
         )
         with self._lock:
             self._sessions[session.id] = session
@@ -151,6 +182,17 @@ class TerminalSessionManager:
         with self._lock:
             sessions = list(self._sessions.values())
             self._sessions.clear()
+        for session in sessions:
+            session.close()
+
+    def close_project(self, project_id: str) -> None:
+        with self._lock:
+            identifiers = [
+                session_id
+                for session_id, session in self._sessions.items()
+                if session.project_id == project_id
+            ]
+            sessions = [self._sessions.pop(session_id) for session_id in identifiers]
         for session in sessions:
             session.close()
 
@@ -191,6 +233,8 @@ async def relay_terminal(websocket: Any, session: TerminalSession) -> None:
 
             control = json.loads(text)
             if control.get("type") == "resize":
+                if control.keys() - {"type", "columns", "rows"}:
+                    raise RemoteProjectError("终端尺寸消息无效")
                 await asyncio.to_thread(
                     session.resize,
                     int(control.get("columns", 120)),
@@ -205,3 +249,11 @@ async def relay_terminal(websocket: Any, session: TerminalSession) -> None:
     for task in pending:
         task.cancel()
     await asyncio.gather(*done, *pending, return_exceptions=True)
+
+
+def validate_terminal_size(columns: int, rows: int) -> tuple[int, int]:
+    if isinstance(columns, bool) or isinstance(rows, bool):
+        raise RemoteProjectError("终端尺寸无效")
+    if not 20 <= columns <= 500 or not 5 <= rows <= 200:
+        raise RemoteProjectError("终端尺寸超出允许范围")
+    return columns, rows

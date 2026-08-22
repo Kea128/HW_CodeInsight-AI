@@ -21,7 +21,12 @@ from api.schemas.repo import (
     WikiTaskSubmitResult,
     TaskStatus,
 )
-from api.schemas.remote import RemoteProjectRequest, RemoteProjectStatus
+from api.schemas.remote import (
+    RemoteProjectRequest,
+    RemoteProjectStatus,
+    SSHFingerprintProbeRequest,
+    SSHFingerprintProbeResponse,
+)
 from api.schemas.wiki import (
     ProcessedProjectEntry,
     WikiCacheData,
@@ -53,6 +58,8 @@ __all__ = [
     "RepoPrepareRequest",
     "RemoteProjectRequest",
     "RemoteProjectStatus",
+    "SSHFingerprintProbeRequest",
+    "SSHFingerprintProbeResponse",
     "WikiCacheData",
     "WikiCacheRequest",
     "WikiExportRequest",

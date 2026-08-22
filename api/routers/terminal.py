@@ -14,12 +14,13 @@ from api.services.terminal import (
 
 router = APIRouter(tags=["terminal"])
 manager = TerminalSessionManager(remote_manager.store)
+remote_manager.add_remove_listener(manager.close_project)
 
 
-def _authorized(websocket: WebSocket) -> bool:
+def _authorized(websocket: WebSocket, supplied_token: str) -> bool:
     return authorized_terminal_request(
         os.environ.get("CODEINSIGHT_DESKTOP_TOKEN"),
-        websocket.query_params.get("token", ""),
+        supplied_token,
         websocket.headers.get("origin"),
         production=os.environ.get("NODE_ENV") == "production",
     )
@@ -27,20 +28,24 @@ def _authorized(websocket: WebSocket) -> bool:
 
 @router.websocket("/ws/terminal")
 async def terminal_socket(websocket: WebSocket):
-    if not _authorized(websocket):
-        await websocket.close(code=4401, reason="Unauthorized desktop terminal")
-        return
     await websocket.accept()
     session = None
     try:
         request = json.loads(await websocket.receive_text())
         if request.get("type") != "open":
             raise RemoteProjectError("终端握手无效")
+        supplied_token = str(request.get("token", ""))
+        if not _authorized(websocket, supplied_token):
+            await websocket.close(code=4401, reason="Unauthorized desktop terminal")
+            return
+        origin = websocket.headers.get("origin") or ""
         session = await asyncio.to_thread(
             manager.open,
             str(request.get("project_id", "")),
             int(request.get("columns", 120)),
             int(request.get("rows", 32)),
+            origin=origin,
+            token=supplied_token,
         )
         await websocket.send_json(
             {

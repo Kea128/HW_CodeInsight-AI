@@ -6,12 +6,15 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+import keyring
+
 Provider = Literal["openai", "google", "ollama"]
 SUPPORTED_PROVIDERS = {"openai", "google", "ollama"}
 KEY_ENVIRONMENTS = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
 }
+KEYRING_SERVICE = "CodeInsight-AI.Models"
 
 
 def settings_path() -> Path:
@@ -19,7 +22,7 @@ def settings_path() -> Path:
     return root / "CodeInsight-AI" / "settings.json"
 
 
-def load_desktop_settings() -> dict[str, str]:
+def _read_settings_file() -> dict[str, str]:
     try:
         data = json.loads(settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
@@ -29,6 +32,49 @@ def load_desktop_settings() -> dict[str, str]:
     return {str(key): str(value) for key, value in data.items() if value is not None}
 
 
+def _write_settings_file(data: dict[str, str]) -> None:
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def migrate_plaintext_api_keys() -> dict[str, str]:
+    data = _read_settings_file()
+    changed = False
+    for provider in KEY_ENVIRONMENTS:
+        field = f"{provider}_api_key"
+        if field in data:
+            value = data[field]
+            try:
+                if value:
+                    keyring.set_password(KEYRING_SERVICE, provider, value)
+            except keyring.errors.KeyringError:
+                continue
+            data.pop(field)
+            changed = True
+    if changed:
+        _write_settings_file(data)
+    return data
+
+
+def api_key_configured(provider: str) -> bool:
+    try:
+        return bool(keyring.get_password(KEYRING_SERVICE, provider))
+    except keyring.errors.KeyringError:
+        return False
+
+
+def load_desktop_settings() -> dict[str, str]:
+    data = migrate_plaintext_api_keys().copy()
+    for provider in KEY_ENVIRONMENTS:
+        data.pop(f"{provider}_api_key", None)
+        if api_key_configured(provider):
+            data[f"{provider}_api_key"] = "__keyring__"
+    return data
+
+
 def save_desktop_settings(
     provider: Provider,
     api_key: str | None,
@@ -36,25 +82,24 @@ def save_desktop_settings(
     ollama_tier: str | None = None,
     ollama_model: str | None = None,
 ) -> dict[str, str]:
-    data = load_desktop_settings()
+    data = migrate_plaintext_api_keys()
     data["provider"] = provider
     if api_key is not None:
         stripped_key = api_key.strip()
         if stripped_key:
-            data[f"{provider}_api_key"] = stripped_key
+            keyring.set_password(KEYRING_SERVICE, provider, stripped_key)
         else:
-            data.pop(f"{provider}_api_key", None)
+            try:
+                keyring.delete_password(KEYRING_SERVICE, provider)
+            except keyring.errors.KeyringError:
+                pass
     if ollama_tier is not None:
         data["ollama_tier"] = ollama_tier
     if ollama_model is not None:
         data["ollama_model"] = ollama_model
 
-    path = settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(temporary, path)
-    return data
+    _write_settings_file(data)
+    return load_desktop_settings()
 
 
 def selected_ollama_model() -> str | None:
@@ -72,7 +117,10 @@ def apply_desktop_settings() -> dict[str, str]:
     if data.get("ollama_model"):
         os.environ["CODEINSIGHT_OLLAMA_MODEL"] = data["ollama_model"]
     environment = KEY_ENVIRONMENTS.get(provider)
-    api_key = data.get(f"{provider}_api_key")
+    try:
+        api_key = keyring.get_password(KEYRING_SERVICE, provider)
+    except keyring.errors.KeyringError:
+        api_key = None
     if environment and api_key:
         os.environ[environment] = api_key
     return data

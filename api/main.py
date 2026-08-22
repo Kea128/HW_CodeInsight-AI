@@ -66,20 +66,32 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "tauri://localhost",
+    ],
+    allow_origin_regex=(
+        r"^http://(127\.0\.0\.1|localhost)(:\d+)?$" if is_development else None
+    ),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-CodeInsight-Token"],
 )
 
 
 @app.middleware("http")
 async def require_desktop_token(request: Request, call_next):
     expected = os.environ.get("CODEINSIGHT_DESKTOP_TOKEN")
+    protected = request.method != "OPTIONS" and request.url.path not in {"/", "/health"}
+    if not is_development and protected and not expected:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "桌面服务令牌未配置，已拒绝请求"},
+        )
     if (
-        expected
-        and request.method != "OPTIONS"
-        and request.url.path not in {"/", "/health"}
+        protected
+        and expected
         and not secrets.compare_digest(
             expected, request.headers.get("X-CodeInsight-Token", "")
         )
@@ -107,9 +119,13 @@ async def recover_persistent_tasks():
     """Resume unfinished work after a daemon or machine restart."""
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return
+    from api.desktop_settings import migrate_plaintext_api_keys
+
+    migrate_plaintext_api_keys()
     recovered = await registry.recover(generate_repo_wiki)
     continuous.manager.start()
     remote.manager.start()
+    terminal.manager.start()
     if recovered:
         logger.info("Recovered %d persistent wiki task(s)", recovered)
 
@@ -118,7 +134,7 @@ async def recover_persistent_tasks():
 async def stop_background_services():
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return
-    terminal.manager.close_all()
+    await terminal.manager.stop()
     await remote.manager.stop()
     await continuous.manager.stop()
 
@@ -159,7 +175,7 @@ async def root():
 
 if __name__ == "__main__":
     # Get port from environment variable or use default
-    port = int(os.environ.get("PORT", 8001))
+    port = int(os.environ.get("PORT", "8001"))
 
     logger.info(f"Starting Streaming API on port {port}")
 
