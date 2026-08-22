@@ -70,7 +70,8 @@ jobs:
           $exitCode = $LASTEXITCODE
           $output | Write-Output
           if ($exitCode -ne 0) {
-            $annotation = ($output -join "`n").Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            $tail = (($output | Select-Object -Last 120) -join "`n") -replace "$([char]27)\[[0-9;]*m", ""
+            $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
             Write-Output "::error title=Desktop host compilation failed::$annotation"
             exit $exitCode
           }
