@@ -1,12 +1,15 @@
 import asyncio
+import io
 import stat
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import paramiko
 import pytest
 
-from api.schemas import RemoteProjectRequest
+from api.schemas import RemoteProjectRequest, TaskStatus
+from api.services import ssh_client
 from api.services.remote import (
     MAX_REMOTE_FILE_BYTES,
     MirrorResult,
@@ -57,8 +60,9 @@ class FakeSftp:
     def listdir_attr(self, path):
         return self.directories[path]
 
-    def get(self, remote_path, local_path):
-        Path(local_path).write_bytes(self.files[remote_path])
+    def open(self, remote_path, mode):
+        assert mode == "rb"
+        return io.BytesIO(self.files[remote_path])
 
 
 class FakeStore:
@@ -173,6 +177,35 @@ def test_mirror_detects_same_size_same_mtime_content_change(tmp_path):
     assert (mirror / "README.md").read_bytes() == b"# Damo"
 
 
+def test_mirror_cancels_during_chunked_file_download(monkeypatch, tmp_path):
+    cancel_event = threading.Event()
+
+    class CancellingStream(io.BytesIO):
+        def read(self, size=-1):
+            chunk = super().read(size)
+            if chunk:
+                cancel_event.set()
+            return chunk
+
+    sftp = FakeSftp()
+    sftp.directories = {
+        "/srv/code": [_entry("README.md", stat.S_IFREG, 1024)]
+    }
+    sftp.files["/srv/code/README.md"] = b"x" * 1024
+    sftp.open = lambda remote_path, mode: CancellingStream(sftp.files[remote_path])
+    monkeypatch.setattr("api.services.remote.SFTP_DOWNLOAD_CHUNK_BYTES", 16)
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    original = mirror / "README.md"
+    original.write_bytes(b"keep")
+
+    with pytest.raises(RemoteProjectError, match="取消"):
+        _mirror_directory(sftp, "/srv/code", mirror, cancel_event)
+
+    assert original.read_bytes() == b"keep"
+    assert not (mirror / ".README.md.codeinsight.tmp").exists()
+
+
 def test_remote_project_id_is_stable_and_contains_no_credentials():
     first = _project_id("10.0.0.8", 22, "ubuntu", "/srv/code")
     second = _project_id("10.0.0.8", 22, "ubuntu", "/srv/code")
@@ -187,6 +220,19 @@ def test_authentication_error_does_not_echo_credentials():
 
     assert str(error) == "Ubuntu 用户名或密码错误"
     assert "denied" not in str(error)
+
+
+def test_credential_store_reports_unavailable_vault_without_secret(monkeypatch):
+    def fail(*_):
+        raise ssh_client.keyring.errors.KeyringError("backend details")
+
+    monkeypatch.setattr(ssh_client.keyring, "set_password", fail)
+
+    with pytest.raises(ssh_client.CredentialStoreUnavailable) as captured:
+        ssh_client.CredentialStore().set("remote-one", "server-secret")
+
+    assert "Credential Manager" in str(captured.value)
+    assert "server-secret" not in str(captured.value)
 
 
 @pytest.mark.asyncio
@@ -381,3 +427,50 @@ async def test_create_rolls_back_credential_when_record_save_fails(
 
     assert store.remote_projects == {}
     assert credentials.values == {}
+
+
+def test_project_listing_is_read_only_and_background_reconciles_analysis(tmp_path):
+    store = FakeStore()
+    continuous = FakeContinuous()
+    task = SimpleNamespace(status=TaskStatus.COMPLETED, error=None)
+    continuous.registry = SimpleNamespace(get=lambda task_id: task)
+    project = {
+        "id": "remote-one",
+        "host": "10.0.0.8",
+        "port": 22,
+        "username": "ubuntu",
+        "remote_path": "/srv/code",
+        "local_path": str(tmp_path / "mirror"),
+        "credential_id": "remote-one",
+        "provider": "ollama",
+        "model": None,
+        "language": "zh",
+        "host_fingerprint": "SHA256:test",
+        "enabled": True,
+        "poll_seconds": 60,
+        "last_sync_at": 1,
+        "last_error": None,
+        "stage": "analyzing",
+        "files_seen": 1,
+        "files_excluded": 0,
+        "files_oversize": 0,
+        "symlinks_skipped": 0,
+    }
+    store.save_remote_project(project)
+    continuous.projects.append(
+        {
+            "id": "continuous-one",
+            "request": {"repo_url": project["local_path"]},
+            "last_task_id": "wiki-one",
+        }
+    )
+    manager = RemoteSyncManager(
+        continuous, store=store, credentials=FakeCredentials()
+    )
+
+    assert manager.list_projects()[0]["stage"] == "analyzing"
+    assert store.remote_projects["remote-one"]["stage"] == "analyzing"
+
+    manager._reconcile_analysis_stages()
+
+    assert store.remote_projects["remote-one"]["stage"] == "ready_for_analysis"

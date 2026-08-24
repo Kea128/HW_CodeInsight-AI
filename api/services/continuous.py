@@ -105,7 +105,7 @@ class ContinuousAnalysisManager:
         store: WikiTaskStore | None = None,
     ):
         self.registry = registry
-        self.store = store or WikiTaskStore()
+        self.store = store or registry.store or WikiTaskStore()
         self._runner: asyncio.Task | None = None
         self._stopping = asyncio.Event()
 
@@ -140,6 +140,7 @@ class ContinuousAnalysisManager:
             "file_hashes": await asyncio.to_thread(_scan_files, request),
             "last_scan_at": int(time.time() * 1000),
             "last_task_id": None,
+            "pending_changes": False,
         }
         self.store.save_continuous_project(project)
         if analyze_now and _inside_window(night_start, night_end, datetime.now()):
@@ -153,6 +154,18 @@ class ContinuousAnalysisManager:
 
     def remove(self, project_id: str) -> bool:
         return self.store.delete_continuous_project(project_id)
+
+    def set_enabled(self, project_id: str, enabled: bool) -> dict[str, Any] | None:
+        project = next(
+            (item for item in self.store.list_continuous_projects() if item["id"] == project_id),
+            None,
+        )
+        if project is None:
+            return None
+        project["enabled"] = enabled
+        project["last_scan_at"] = int(time.time() * 1000)
+        self.store.save_continuous_project(project)
+        return project
 
     def start(self) -> None:
         if self._runner is None or self._runner.done():
@@ -184,16 +197,22 @@ class ContinuousAnalysisManager:
             elapsed = now_ms - (project.get("last_scan_at") or 0)
             if elapsed < project["poll_seconds"] * 1000:
                 continue
+            request = WikiTaskRequest.model_validate(project["request"])
+            current = await asyncio.to_thread(_scan_files, request)
             last_task = self.registry.get(project.get("last_task_id") or "")
             if last_task and not last_task.status.is_terminal():
-                # Avoid rescanning and rejoining the same active task every
-                # poll. Changes made meanwhile are detected after it finishes.
+                # Remember changes observed while analysis is active. The
+                # baseline remains the version being analyzed so a follow-up
+                # run is guaranteed after the current task reaches a terminal
+                # state, including across process restarts.
+                if current != project.get("file_hashes", {}):
+                    project["pending_changes"] = True
                 project["last_scan_at"] = now_ms
                 self.store.save_continuous_project(project)
                 continue
-            request = WikiTaskRequest.model_validate(project["request"])
-            current = await asyncio.to_thread(_scan_files, request)
-            changed = current != project.get("file_hashes", {})
+            changed = bool(project.get("pending_changes")) or (
+                current != project.get("file_hashes", {})
+            )
             project["last_scan_at"] = now_ms
             inside_window = _inside_window(
                 project.get("night_start"),
@@ -210,9 +229,11 @@ class ContinuousAnalysisManager:
                 project["last_task_id"] = result.task_id
                 if not result.joined:
                     project["file_hashes"] = current
+                    project["pending_changes"] = False
                 logger.info(
                     "File changes queued continuous analysis for %s", project["id"]
                 )
             elif not changed:
                 project["file_hashes"] = current
+                project["pending_changes"] = False
             self.store.save_continuous_project(project)

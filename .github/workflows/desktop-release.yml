@@ -26,6 +26,24 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Validate release channel and versions
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REPOSITORY -ne "Kea128/HW_CodeInsight-AI") {
+            throw "Desktop releases must run from Kea128/HW_CodeInsight-AI"
+          }
+          $packageVersion = (Get-Content package.json | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $cargoVersion = (
+            Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"'
+          ).Matches[0].Groups[1].Value
+          if ($packageVersion -ne $tauriVersion -or $packageVersion -ne $cargoVersion) {
+            throw "package.json, tauri.conf.json and Cargo.toml versions must match"
+          }
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "desktop-v$packageVersion") {
+            throw "Tag $env:GITHUB_REF_NAME does not match desktop-v$packageVersion"
+          }
+
       - name: Install frontend and desktop tooling
         run: |
           npm ci
@@ -63,9 +81,57 @@ jobs:
           New-Item -ItemType Directory -Force src-tauri/binaries
           Copy-Item api/dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
 
+      - name: Run backend regression tests
+        run: |
+          poetry -C api run pytest ../tests/backend -q
+
+      - name: Smoke test frozen daemon
+        shell: pwsh
+        run: |
+          $env:CODEINSIGHT_DESKTOP_TOKEN = "desktop-ci-token"
+          $daemon = Resolve-Path "src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe"
+          $process = Start-Process -FilePath $daemon -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 60; $attempt++) {
+              Start-Sleep -Seconds 1
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:8001/health" -Headers @{
+                  "X-CodeInsight-Token" = "desktop-ci-token"
+                } -TimeoutSec 2
+                if ($health.status -in @("ok", "healthy")) {
+                  $ready = $true
+                  break
+                }
+              } catch {}
+            }
+            if (-not $ready) {
+              throw "Frozen daemon did not become healthy within 60 seconds"
+            }
+            Invoke-RestMethod -Uri "http://127.0.0.1:8001/remote/projects" -Headers @{
+              "X-CodeInsight-Token" = "desktop-ci-token"
+            } -TimeoutSec 5 | Out-Null
+          } finally {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Validate desktop assets
+        run: |
+          npm run desktop:prepare
+          node --check desktop-ui/app.js
+          node --check desktop-ui/terminal-ui.js
+          if (-not (Test-Path "src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe")) {
+            throw "Desktop sidecar is missing"
+          }
+          if (-not (Test-Path "src-tauri/icons/icon.ico")) {
+            throw "Desktop icon is missing"
+          }
+
       - name: Validate desktop host
         shell: pwsh
         run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo test --manifest-path src-tauri/Cargo.toml
           $output = & cargo check --manifest-path src-tauri/Cargo.toml 2>&1
           $exitCode = $LASTEXITCODE
           $output | Write-Output
@@ -75,6 +141,7 @@ jobs:
             Write-Output "::error title=Desktop host compilation failed::$annotation"
             exit $exitCode
           }
+          cargo build --release --manifest-path src-tauri/Cargo.toml
 
       - name: Build and publish signed installers
         uses: tauri-apps/tauri-action@v0
@@ -85,6 +152,6 @@ jobs:
         with:
           tagName: desktop-v__VERSION__
           releaseName: "CodeInsight-AI Desktop v__VERSION__"
-          releaseBody: "Windows desktop preview with persistent tasks, recovery, file watching, night analysis, and signed online updates."
+          releaseBody: "Windows desktop release with startup recovery, redesigned Ubuntu workflow, secure embedded terminal, reliable persistent tasks, and stronger local AI setup."
           releaseDraft: false
           prerelease: false

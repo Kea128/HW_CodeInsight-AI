@@ -1,3 +1,7 @@
+import time
+
+import pytest
+
 from api.services import terminal
 
 
@@ -112,6 +116,87 @@ def test_terminal_authorization_requires_token_and_desktop_origin():
     assert not authorize("secret", "secret", "https://evil.example", production=True)
     assert authorize("secret", "secret", "http://localhost:1420", production=False)
     assert not authorize("secret", "secret", "http://localhost:1420", production=True)
+    assert authorize(None, "", "http://127.0.0.1:1420", production=False)
+    assert not authorize(None, "", "http://tauri.localhost", production=True)
+    assert not authorize(
+        "secret", "secret", "http://localhost:1420.evil.example", production=False
+    )
+    assert not authorize(
+        "secret", "secret", "https://tauri.localhost", production=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_websocket_denies_before_accept():
+    class FakeWebSocket:
+        headers = {
+            "origin": "http://tauri.localhost",
+            "sec-websocket-protocol": "codeinsight.wrong",
+        }
+
+        def __init__(self):
+            self.closed = None
+
+        async def close(self, code, reason):
+            self.closed = (code, reason)
+
+    websocket = FakeWebSocket()
+    supplied = await terminal.authorize_terminal_websocket(
+        websocket,
+        "desktop-secret",
+        production=True,
+    )
+
+    assert supplied is None
+    assert websocket.closed[0] == 4401
+
+
+@pytest.mark.asyncio
+async def test_terminal_websocket_accepts_token_subprotocol():
+    class FakeWebSocket:
+        headers = {
+            "origin": "http://tauri.localhost",
+            "sec-websocket-protocol": "codeinsight.desktop-secret",
+        }
+
+        async def close(self, code, reason):
+            raise AssertionError((code, reason))
+
+    supplied = await terminal.authorize_terminal_websocket(
+        FakeWebSocket(),
+        "desktop-secret",
+        production=True,
+    )
+
+    assert supplied == "desktop-secret"
+
+
+@pytest.mark.asyncio
+async def test_idle_reaping_produces_clean_client_visible_close():
+    channel = FakeChannel()
+    channel.closed = True
+    session = terminal.TerminalSession(
+        id="session-one",
+        project_id="remote-one",
+        client=FakeClient(channel),
+        channel=channel,
+        last_activity=time.monotonic(),
+        origin="http://tauri.localhost",
+        token_digest="digest",
+        close_reason="Terminal session idle timeout",
+    )
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.closed = None
+
+        async def close(self, code, reason):
+            self.closed = (code, reason)
+
+    websocket = FakeWebSocket()
+    await terminal.relay_terminal(websocket, session)
+
+    assert websocket.closed == (1000, "Terminal session idle timeout")
 
 
 def test_terminal_rejects_invalid_resize_and_closes_project(monkeypatch, tmp_path):

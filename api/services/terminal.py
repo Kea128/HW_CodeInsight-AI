@@ -10,6 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import paramiko
 
@@ -24,10 +25,31 @@ MAX_TERMINAL_SESSIONS = 8
 MAX_INPUT_BYTES = 64 * 1024
 SESSION_IDLE_SECONDS = 60 * 60
 DESKTOP_ORIGINS = {
+    # Tauri v2's default production origins. Windows WebView2 uses
+    # http://tauri.localhost; macOS/Linux use tauri://localhost.
     "http://tauri.localhost",
-    "https://tauri.localhost",
     "tauri://localhost",
 }
+
+
+def _development_loopback_origin(origin: str | None) -> bool:
+    if not origin:
+        return False
+    try:
+        parsed = urlsplit(origin)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+        and port is not None
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def authorized_terminal_request(
@@ -37,13 +59,44 @@ def authorized_terminal_request(
     *,
     production: bool,
 ) -> bool:
-    if not expected_token or not secrets.compare_digest(expected_token, supplied_token):
-        return False
-    if origin in DESKTOP_ORIGINS:
-        return True
-    return not production and bool(
-        origin and origin.startswith(("http://127.0.0.1:", "http://localhost:"))
+    valid_origin = origin in DESKTOP_ORIGINS or (
+        not production and _development_loopback_origin(origin)
     )
+    if not valid_origin:
+        return False
+    if not expected_token:
+        # Frozen/production daemons fail closed. An unconfigured token is only
+        # permitted for an explicitly loopback development origin.
+        return not production and _development_loopback_origin(origin)
+    return secrets.compare_digest(expected_token, supplied_token)
+
+
+async def authorize_terminal_websocket(
+    websocket: Any,
+    expected_token: str | None,
+    *,
+    production: bool,
+) -> str | None:
+    """Deny an unauthorized socket before the caller accepts its upgrade."""
+    protocols = [
+        value.strip()
+        for value in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if value.strip()
+    ]
+    protocol = next(
+        (value for value in protocols if value.startswith("codeinsight.")),
+        "",
+    )
+    supplied_token = protocol.removeprefix("codeinsight.") if protocol else ""
+    if authorized_terminal_request(
+        expected_token,
+        supplied_token,
+        websocket.headers.get("origin"),
+        production=production,
+    ):
+        return supplied_token
+    await websocket.close(code=4401, reason="Unauthorized desktop terminal")
+    return None
 
 
 @dataclass
@@ -55,6 +108,7 @@ class TerminalSession:
     last_activity: float
     origin: str
     token_digest: str
+    close_reason: str | None = None
 
     def receive(self) -> bytes:
         try:
@@ -79,7 +133,9 @@ class TerminalSession:
         )
         self.last_activity = time.monotonic()
 
-    def close(self) -> None:
+    def close(self, reason: str | None = None) -> None:
+        if reason and not self.close_reason:
+            self.close_reason = reason
         self.channel.close()
         self.client.close()
 
@@ -183,7 +239,7 @@ class TerminalSessionManager:
             sessions = list(self._sessions.values())
             self._sessions.clear()
         for session in sessions:
-            session.close()
+            session.close("Terminal manager stopped")
 
     def close_project(self, project_id: str) -> None:
         with self._lock:
@@ -205,7 +261,12 @@ class TerminalSessionManager:
         ]
         sessions = [self._sessions.pop(session_id) for session_id in expired]
         for session in sessions:
-            session.close()
+            reason = (
+                "Terminal session idle timeout"
+                if session.last_activity < deadline
+                else "Terminal session ended"
+            )
+            session.close(reason)
 
 
 async def relay_terminal(websocket: Any, session: TerminalSession) -> None:
@@ -249,6 +310,12 @@ async def relay_terminal(websocket: Any, session: TerminalSession) -> None:
     for task in pending:
         task.cancel()
     await asyncio.gather(*done, *pending, return_exceptions=True)
+    if session.close_reason:
+        try:
+            await websocket.close(code=1000, reason=session.close_reason)
+        except RuntimeError:
+            # The peer may have completed its own close handshake first.
+            pass
 
 
 def validate_terminal_size(columns: int, rows: int) -> tuple[int, int]:

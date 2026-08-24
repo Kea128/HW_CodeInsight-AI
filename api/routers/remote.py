@@ -10,10 +10,10 @@ from api.schemas import (
     SSHFingerprintProbeResponse,
 )
 from api.services.remote import RemoteProjectError, RemoteSyncManager
-from api.services.ssh_client import probe_host_fingerprint
+from api.services.ssh_client import CredentialStoreUnavailable, probe_host_fingerprint
 
 router = APIRouter(prefix="/remote", tags=["remote-analysis"])
-manager = RemoteSyncManager(continuous_manager)
+manager = RemoteSyncManager(continuous_manager, store=continuous_manager.store)
 
 
 @router.post("/fingerprint", response_model=SSHFingerprintProbeResponse)
@@ -42,6 +42,8 @@ async def list_remote_projects():
 async def create_remote_project(request: RemoteProjectRequest):
     try:
         return await manager.create(request)
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except RemoteProjectError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:

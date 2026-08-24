@@ -2,10 +2,10 @@ from fastapi import APIRouter, HTTPException, Response
 
 from api.schemas import ContinuousAnalysisRequest, ContinuousProject
 from api.services.continuous import ContinuousAnalysisManager
-from api.services.wiki import registry
+from api.services.wiki import registry, wiki_task_store
 
 router = APIRouter(prefix="/continuous", tags=["continuous-analysis"])
-manager = ContinuousAnalysisManager(registry)
+manager = ContinuousAnalysisManager(registry, store=wiki_task_store)
 
 
 @router.get("/projects", response_model=list[ContinuousProject])
@@ -25,6 +25,22 @@ async def register_continuous_project(request: ContinuousAnalysisRequest):
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/projects/{project_id}/pause", response_model=ContinuousProject)
+async def pause_continuous_project(project_id: str):
+    project = manager.set_enabled(project_id, False)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Continuous project not found")
+    return project
+
+
+@router.post("/projects/{project_id}/resume", response_model=ContinuousProject)
+async def resume_continuous_project(project_id: str):
+    project = manager.set_enabled(project_id, True)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Continuous project not found")
+    return project
 
 
 @router.delete("/projects/{project_id}", status_code=204)

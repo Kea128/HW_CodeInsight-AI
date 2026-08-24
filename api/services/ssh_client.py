@@ -22,21 +22,37 @@ class RemoteProjectError(RuntimeError):
     pass
 
 
+class CredentialStoreUnavailable(RemoteProjectError):
+    pass
+
+
+def _credential_store_error(action: str) -> CredentialStoreUnavailable:
+    return CredentialStoreUnavailable(
+        f"Windows 凭据管理器不可用，无法{action}服务器密码。"
+        "请确认 Credential Manager 服务正在运行，然后重试"
+    )
+
+
 class CredentialStore:
     def set(self, credential_id: str, password: str) -> None:
-        keyring.set_password(CREDENTIAL_SERVICE, credential_id, password)
+        try:
+            keyring.set_password(CREDENTIAL_SERVICE, credential_id, password)
+        except keyring.errors.KeyringError as error:
+            raise _credential_store_error("保存") from error
 
     def get(self, credential_id: str) -> str | None:
         try:
             return keyring.get_password(CREDENTIAL_SERVICE, credential_id)
-        except keyring.errors.KeyringError:
-            return None
+        except keyring.errors.KeyringError as error:
+            raise _credential_store_error("读取") from error
 
     def delete(self, credential_id: str) -> None:
         try:
             keyring.delete_password(CREDENTIAL_SERVICE, credential_id)
-        except keyring.errors.KeyringError:
+        except keyring.errors.PasswordDeleteError:
             pass
+        except keyring.errors.KeyringError as error:
+            raise _credential_store_error("删除") from error
 
 
 def remote_data_root() -> Path:

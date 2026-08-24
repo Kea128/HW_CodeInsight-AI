@@ -115,6 +115,27 @@ python -m api.main
 
 The API will be available at `http://localhost:8001`
 
+### Desktop loopback security
+
+The frozen daemon binds to `127.0.0.1` and runs with `NODE_ENV=production`.
+Production HTTP requests require `X-CodeInsight-Token`; production terminal
+WebSockets require the same ephemeral token as the URL-encoded `token` query
+parameter before the upgrade is accepted. A missing production token fails
+closed.
+
+Tauri v2 uses `http://tauri.localhost` for the Windows WebView2 production
+origin and `tauri://localhost` on macOS/Linux. This bundle does not enable
+Tauri's optional HTTPS scheme. Development additionally permits explicit
+`http://localhost:<port>`, `http://127.0.0.1:<port>`, and
+`http://[::1]:<port>` origins. Tokenless HTTP/WebSocket access is only intended
+for the default loopback-bound development server when no desktop token is
+configured; setting `CODEINSIGHT_DESKTOP_TOKEN` makes it mandatory in
+development too.
+
+The local repository structure endpoint only reads an exact root already
+registered by continuous/remote analysis or by `POST /local_repo/roots` after
+the desktop folder picker returns a directory.
+
 ## 🧠 How It Works
 
 ### 1. Repository Indexing

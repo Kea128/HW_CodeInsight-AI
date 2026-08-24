@@ -7,6 +7,7 @@ import hashlib
 import os
 import posixpath
 import shutil
+import socket
 import stat
 import threading
 import time
@@ -34,6 +35,8 @@ logger = get_logger(__name__)
 
 SYNC_LOOP_SECONDS = 2
 MAX_REMOTE_FILE_BYTES = 100 * 1024 * 1024
+SFTP_DOWNLOAD_CHUNK_BYTES = 256 * 1024
+SFTP_OPERATION_TIMEOUT_SECONDS = 2.0
 IGNORED_DIRS = {
     ".git",
     ".next",
@@ -154,6 +157,32 @@ def _same_content(first: Path, second: Path) -> bool:
     return first_hash.digest() == second_hash.digest()
 
 
+def _download_remote_file(
+    sftp: paramiko.SFTPClient,
+    remote_path: str,
+    local_path: Path,
+    cancel_event: threading.Event | None,
+) -> None:
+    """Download in bounded chunks so cancellation is observed mid-file."""
+    if cancel_event and cancel_event.is_set():
+        raise RemoteProjectError("远程同步已取消")
+    try:
+        with sftp.open(remote_path, "rb") as remote_stream, local_path.open(
+            "wb"
+        ) as local_stream:
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    raise RemoteProjectError("远程同步已取消")
+                chunk = remote_stream.read(SFTP_DOWNLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                local_stream.write(chunk)
+    except (TimeoutError, socket.timeout) as error:
+        if cancel_event and cancel_event.is_set():
+            raise RemoteProjectError("远程同步已取消") from error
+        raise
+
+
 def _mirror_directory(
     sftp: paramiko.SFTPClient,
     remote_root: str,
@@ -224,7 +253,7 @@ def _mirror_directory(
             modified = int(entry.st_mtime or time.time())
             temporary = local_path.with_name(f".{local_path.name}.codeinsight.tmp")
             try:
-                sftp.get(remote_path, str(temporary))
+                _download_remote_file(sftp, remote_path, temporary, cancel_event)
                 if _same_content(local_path, temporary):
                     continue
                 os.replace(temporary, local_path)
@@ -263,6 +292,9 @@ def _sync_project(
     client, fingerprint = _connect(project, password, known_hosts_path)
     try:
         with client.open_sftp() as sftp:
+            # Paramiko reads are blocking. A short channel timeout bounds how
+            # long cancel/delete can wait when the remote host stalls.
+            sftp.get_channel().settimeout(SFTP_OPERATION_TIMEOUT_SECONDS)
             result = _mirror_directory(
                 sftp,
                 project["remote_path"],
@@ -328,16 +360,6 @@ class RemoteSyncManager:
 
     def _status(self, project: dict[str, Any]) -> dict[str, Any]:
         continuous_project = self._continuous_project(project)
-        registry = getattr(self.continuous, "registry", None)
-        task_id = continuous_project.get("last_task_id") if continuous_project else None
-        task = registry.get(task_id) if registry and task_id else None
-        if project.get("stage") == "analyzing" and task and task.status.is_terminal():
-            if task.status.value == "failed":
-                self._save_stage(
-                    project, "failed", str(getattr(task, "error", None) or "AI 分析失败")
-                )
-            else:
-                self._save_stage(project, "ready_for_analysis")
         return {
             key: project[key]
             for key in (
@@ -362,6 +384,38 @@ class RemoteSyncManager:
             if continuous_project
             else None
         }
+
+    def _reconcile_analysis_stages(self) -> None:
+        """Persist completed analysis stages from the background loop.
+
+        Read endpoints must remain read-only: polling project status should not
+        be required for state transitions to reach SQLite.
+        """
+        registry = getattr(self.continuous, "registry", None)
+        if registry is None:
+            return
+        for project in self.store.list_remote_projects():
+            continuous_project = self._continuous_project(project)
+            task_id = (
+                continuous_project.get("last_task_id")
+                if continuous_project
+                else None
+            )
+            task = registry.get(task_id) if task_id else None
+            if task and not task.status.is_terminal():
+                if project.get("stage") == "ready_for_analysis":
+                    self._save_stage(project, "analyzing")
+                continue
+            if project.get("stage") != "analyzing" or not task:
+                continue
+            if task.status.value == "failed":
+                self._save_stage(
+                    project,
+                    "failed",
+                    str(getattr(task, "error", None) or "AI 分析失败"),
+                )
+            else:
+                self._save_stage(project, "ready_for_analysis")
 
     def list_projects(self) -> list[dict[str, Any]]:
         return [self._status(project) for project in self.store.list_remote_projects()]
@@ -402,6 +456,7 @@ class RemoteSyncManager:
                 if existing_project
                 else None
             )
+            credential_written = False
             project = {
                 "id": project_id,
                 "host": request.host,
@@ -428,6 +483,7 @@ class RemoteSyncManager:
             }
             try:
                 self.credentials.set(project["credential_id"], password)
+                credential_written = True
                 self._save_stage(project, "saved")
             except BaseException as original:
                 rollback_errors: list[Exception] = []
@@ -438,15 +494,16 @@ class RemoteSyncManager:
                         self.store.delete_remote_project(project_id)
                 except Exception as error:
                     rollback_errors.append(error)
-                try:
-                    if existing_project and previous_password is not None:
-                        self.credentials.set(
-                            project["credential_id"], previous_password
-                        )
-                    else:
-                        self.credentials.delete(project["credential_id"])
-                except Exception as error:
-                    rollback_errors.append(error)
+                if credential_written:
+                    try:
+                        if existing_project and previous_password is not None:
+                            self.credentials.set(
+                                project["credential_id"], previous_password
+                            )
+                        else:
+                            self.credentials.delete(project["credential_id"])
+                    except Exception as error:
+                        rollback_errors.append(error)
                 if rollback_errors:
                     logger.error(
                         "Remote project %s rollback incomplete: %s",
@@ -635,6 +692,7 @@ class RemoteSyncManager:
 
     async def _run(self) -> None:
         while not self._stopping.is_set():
+            self._reconcile_analysis_stages()
             now = int(time.time() * 1000)
             for project in self.store.list_remote_projects():
                 if not project["enabled"]:

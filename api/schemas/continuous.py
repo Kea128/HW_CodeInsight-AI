@@ -25,3 +25,4 @@ class ContinuousProject(BaseModel):
     file_hashes: dict[str, str] = Field(default_factory=dict, exclude=True)
     last_scan_at: int | None = None
     last_task_id: str | None = None
+    pending_changes: bool = False

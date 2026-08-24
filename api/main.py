@@ -1,6 +1,7 @@
 import logging
 import os
 import secrets
+from datetime import UTC, datetime
 
 import uvicorn
 from dotenv import load_dotenv
@@ -23,6 +24,7 @@ from api.routers import (
     terminal,
     wiki,
 )
+from api.services.terminal import DESKTOP_ORIGINS
 from api.services.wiki import generate_repo_wiki, registry
 
 # Configure logging
@@ -66,13 +68,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://tauri.localhost",
-        "https://tauri.localhost",
-        "tauri://localhost",
-    ],
+    # Tauri v2 default origins: WebView2 (Windows) uses
+    # http://tauri.localhost; WKWebView/WebKit use tauri://localhost.
+    # This desktop bundle does not enable Tauri's optional HTTPS scheme.
+    allow_origins=sorted(DESKTOP_ORIGINS),
     allow_origin_regex=(
-        r"^http://(127\.0\.0\.1|localhost)(:\d+)?$" if is_development else None
+        r"^http://(127\.0\.0\.1|localhost|\[::1\]):\d+$"
+        if is_development
+        else None
     ),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -83,7 +86,9 @@ app.add_middleware(
 @app.middleware("http")
 async def require_desktop_token(request: Request, call_next):
     expected = os.environ.get("CODEINSIGHT_DESKTOP_TOKEN")
-    protected = request.method != "OPTIONS" and request.url.path not in {"/", "/health"}
+    protected = request.method != "OPTIONS" and request.url.path != "/"
+    # Production always fails closed. Development permits tokenless loopback
+    # HTTP only when no token was configured; once configured it is mandatory.
     if not is_development and protected and not expected:
         return JSONResponse(
             status_code=503,
@@ -119,9 +124,18 @@ async def recover_persistent_tasks():
     """Resume unfinished work after a daemon or machine restart."""
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return
-    from api.desktop_settings import migrate_plaintext_api_keys
+    from api.desktop_settings import (
+        CredentialStorageUnavailable,
+        migrate_plaintext_api_keys,
+    )
 
-    migrate_plaintext_api_keys()
+    try:
+        migrate_plaintext_api_keys()
+    except CredentialStorageUnavailable as error:
+        logger.warning("%s", error)
+    pruned_events = registry.store.prune_terminal_events() if registry.store else 0
+    if pruned_events:
+        logger.info("Pruned %d old task event(s)", pruned_events)
     recovered = await registry.recover(generate_repo_wiki)
     continuous.manager.start()
     remote.manager.start()
@@ -142,7 +156,11 @@ async def stop_background_services():
 @app.get("/health")
 async def health():
     """Lightweight readiness endpoint for desktop and remote-engine clients."""
-    return {"status": "ok"}
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "service": "codeinsight-engine",
+    }
 
 
 @app.get("/")
@@ -182,7 +200,7 @@ if __name__ == "__main__":
     # Run the FastAPI app with uvicorn
     uvicorn.run(
         "api.main:app",
-        host="0.0.0.0",
+        host=os.environ.get("HOST", "127.0.0.1"),
         port=port,
         reload=is_development,
         reload_excludes=["**/logs/*", "**/__pycache__/*", "**/*.pyc"]

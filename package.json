@@ -1,6 +1,6 @@
 {
   "name": "codeinsight-ai",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Local-first continuous AI code understanding for desktop and VS Code.",
   "scripts": {
@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test:desktop-ui": "vitest run desktop-ui",
     "desktop:prepare": "node scripts/prepare-desktop.mjs",
     "tauri": "tauri"
   },
@@ -38,8 +39,9 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "eslint": "^10.8.0",
     "eslint-config-next": "^16.2.12",
+    "jsdom": "^30.0.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
-  },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+    "typescript": "^5",
+    "vitest": "^4.1.11"
+  }
 }

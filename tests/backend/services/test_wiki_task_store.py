@@ -1,3 +1,7 @@
+import asyncio
+import json
+import sqlite3
+
 import pytest
 
 from api.schemas import WikiPage, WikiStructureModel, WikiTaskRequest
@@ -123,3 +127,171 @@ async def test_registry_recovers_only_missing_pages(tmp_path):
     assert task.pages_done == 1
     assert task.request.token is None
     assert resumed == [task]
+
+
+def test_migration_from_v4_retains_terminal_tasks_and_events(tmp_path):
+    path = tmp_path / "upgrade.db"
+    request = {
+        "owner": "local",
+        "repo": "legacy",
+        "type": "local",
+        "repo_url": "/tmp/legacy",
+    }
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL
+            );
+            INSERT INTO schema_migrations VALUES (4, 1);
+            CREATE TABLE wiki_tasks (
+                id TEXT PRIMARY KEY, request_json TEXT NOT NULL,
+                status TEXT NOT NULL, pages_done INTEGER NOT NULL DEFAULT 0,
+                current_page_ids_json TEXT NOT NULL DEFAULT '[]',
+                wiki_structure_json TEXT,
+                generated_pages_json TEXT NOT NULL DEFAULT '{}',
+                default_branch TEXT NOT NULL DEFAULT 'main', error TEXT,
+                submitted_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                pause_requested INTEGER NOT NULL DEFAULT 0,
+                cancel_requested INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE task_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL, event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE continuous_projects (
+                id TEXT PRIMARY KEY, request_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, night_start TEXT,
+                night_end TEXT, poll_seconds INTEGER NOT NULL DEFAULT 15,
+                file_hashes_json TEXT NOT NULL DEFAULT '{}',
+                last_scan_at INTEGER, last_task_id TEXT,
+                updated_at INTEGER NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO wiki_tasks VALUES (?, ?, 'completed', 0, '[]', NULL, "
+            "'{}', 'main', NULL, 1, 1, 0, 0)",
+            ("local_local_legacy", json.dumps(request)),
+        )
+        connection.execute(
+            "INSERT INTO task_events(task_id, event_type, created_at) "
+            "VALUES ('local_local_legacy', 'completed', 1)"
+        )
+
+    store = WikiTaskStore(str(path))
+
+    assert store.load("local_local_legacy")["status"] == "completed"
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == 1
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(continuous_projects)")
+        }
+        versions = [
+            row[0]
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ]
+    assert "pending_changes" in columns
+    assert versions == [4, 5, 6]
+
+
+def test_fresh_database_runs_every_migration(tmp_path):
+    path = tmp_path / "fresh.db"
+    WikiTaskStore(str(path))
+
+    with sqlite3.connect(path) as connection:
+        versions = [
+            row[0]
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ]
+
+    assert versions == [1, 2, 3, 4, 5, 6]
+
+
+def test_terminal_event_retention_keeps_recent_history(tmp_path):
+    store = WikiTaskStore(str(tmp_path / "retention.db"))
+    task = _task()
+    task.status = TaskStatus.COMPLETED
+    for index in range(5):
+        store.save(task.snapshot(), f"event-{index}")
+
+    removed = store.prune_terminal_events(
+        retention_days=36500, max_events_per_task=2
+    )
+
+    with sqlite3.connect(store.path) as connection:
+        remaining = connection.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ?",
+            (task.repo_key,),
+        ).fetchone()[0]
+    assert removed == 3
+    assert remaining == 2
+
+
+@pytest.mark.asyncio
+async def test_recovery_skips_terminal_history_and_only_events_resumed_tasks(tmp_path):
+    store = WikiTaskStore(str(tmp_path / "tasks.db"))
+    running = _task()
+    running.status = TaskStatus.GENERATING
+    store.save(running.snapshot(), "checkpoint")
+
+    paused = _task()
+    paused.persisted_id = "legacy-paused"
+    paused.status = TaskStatus.PAUSED
+    paused.pause_requested = True
+    store.save(paused.snapshot(), "paused")
+
+    completed = _task()
+    completed.persisted_id = "legacy-completed"
+    completed.status = TaskStatus.COMPLETED
+    store.save(completed.snapshot(), "completed")
+
+    registry = TaskRegistry(store=store)
+
+    async def runner(task):
+        task.status = TaskStatus.COMPLETED
+
+    assert await registry.recover(runner) == 1
+    await registry.get(running.repo_key).task
+
+    assert registry.get("legacy-paused") is not None
+    assert registry.get("legacy-completed") is None
+    with sqlite3.connect(store.path) as connection:
+        recovered_ids = {
+            row[0]
+            for row in connection.execute(
+                "SELECT task_id FROM task_events WHERE event_type = 'recovered'"
+            )
+        }
+    assert recovered_ids == {running.repo_key}
+
+
+@pytest.mark.asyncio
+async def test_new_identity_joins_active_legacy_recovery(tmp_path):
+    store = WikiTaskStore(str(tmp_path / "tasks.db"))
+    original = _task()
+    legacy_id = original.request.legacy_repo_key
+    original.persisted_id = legacy_id
+    original.status = TaskStatus.GENERATING
+    store.save(original.snapshot())
+    registry = TaskRegistry(store=store)
+    release = asyncio.Event()
+
+    async def runner(task):
+        await release.wait()
+
+    await registry.recover(runner)
+    result = await registry.submit(_task(), runner)
+
+    assert result.joined is True
+    assert result.task_id == legacy_id
+
+    release.set()
+    await registry.get(legacy_id).task

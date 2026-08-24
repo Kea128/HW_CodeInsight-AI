@@ -92,7 +92,7 @@ async def test_submit_creates_and_completes(monkeypatch):
     assert saved["pages"]["page-1"].content == "ok:page-1"
 
 
-async def test_submit_joins_active_task(monkeypatch):
+async def test_task_identity_separates_language_provider_and_model(monkeypatch):
     reg = TaskRegistry(max_concurrent=2)
     monkeypatch.setattr(wt, "WIKI_TASK_TTL_SECONDS", 0)
     monkeypatch.setattr(wt, "wiki_cache_exists", lambda **p: False)
@@ -108,14 +108,14 @@ async def test_submit_joins_active_task(monkeypatch):
     assert r1.created
     await _wait_active(reg, r1.task_id)
 
-    r2 = await reg.submit(
-        _req(language="ja"), blocking_run
-    )  # different settings, same repo
-    assert r2.joined and not r2.created
-    assert r2.task_id == r1.task_id
+    r2 = await reg.submit(_req(language="ja"), blocking_run)
+    r3 = await reg.submit(_req(provider="ollama", model="qwen3:4b"), blocking_run)
+    assert r2.created and not r2.joined
+    assert r3.created and not r3.joined
+    assert len({r1.task_id, r2.task_id, r3.task_id}) == 3
 
     gate.set()
-    await reg.get(r1.task_id).task
+    await asyncio.gather(*(reg.get(result.task_id).task for result in (r1, r2, r3)))
 
 
 async def test_cancel_interrupts_running_task(monkeypatch):

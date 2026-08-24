@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
-use tauri_plugin_shell::process::CommandChild;
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
@@ -34,6 +34,37 @@ struct PendingUpdate(Mutex<Option<Update>>);
 struct PendingManualUpdate(Mutex<Option<ManualUpdate>>);
 struct UpdateCheckCache(Mutex<Option<(Instant, Option<String>)>>);
 struct UpdateControl(AtomicBool);
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineSidecarEvent {
+    state: String,
+    code: Option<i32>,
+    message: Option<String>,
+}
+
+fn emit_engine_event(
+    app: &tauri::AppHandle,
+    state: &str,
+    code: Option<i32>,
+    message: Option<String>,
+) {
+    let _ = app.emit(
+        "engine-sidecar",
+        EngineSidecarEvent {
+            state: state.to_string(),
+            code,
+            message,
+        },
+    );
+}
+
+fn daemon_log_file() -> std::path::PathBuf {
+    let root = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    root.join("CodeInsight-AI").join("daemon.log")
+}
 
 #[cfg(target_os = "windows")]
 fn generate_desktop_token() -> String {
@@ -150,12 +181,34 @@ fn stop_daemon(app: &tauri::AppHandle) {
 }
 
 fn spawn_daemon(app: &tauri::AppHandle, desktop_token: &str) -> Result<CommandChild, String> {
-    app.shell()
+    emit_engine_event(app, "starting", None, None);
+    let (mut events, child) = app
+        .shell()
         .sidecar("codeinsight-daemon")
         .map(|command| command.env("CODEINSIGHT_DESKTOP_TOKEN", desktop_token))
         .and_then(|command| command.spawn())
-        .map(|(_events, child)| child)
-        .map_err(|error| describe_error("分析服务启动失败", error))
+        .map_err(|error| describe_error("分析服务启动失败", error))?;
+    emit_engine_event(app, "started", None, None);
+    let event_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = events.recv().await {
+            match event {
+                CommandEvent::Terminated(payload) => {
+                    emit_engine_event(
+                        &event_app,
+                        "exited",
+                        payload.code,
+                        payload.signal.map(|signal| format!("signal {signal}")),
+                    );
+                }
+                CommandEvent::Error(message) => {
+                    emit_engine_event(&event_app, "error", None, Some(message));
+                }
+                _ => {}
+            }
+        }
+    });
+    Ok(child)
 }
 
 fn restore_daemon(app: &tauri::AppHandle) {
@@ -170,7 +223,10 @@ fn restore_daemon(app: &tauri::AppHandle) {
                 }
             }
         }
-        Err(error) => eprintln!("{error}"),
+        Err(error) => {
+            emit_engine_event(app, "failed", None, Some(error.clone()));
+            eprintln!("{error}");
+        }
     }
 }
 
@@ -689,6 +745,24 @@ fn open_manual_update(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn daemon_log_path() -> String {
+    daemon_log_file().to_string_lossy().into_owned()
+}
+
+#[tauri::command]
+fn open_daemon_log_directory(app: tauri::AppHandle) -> Result<(), String> {
+    let path = daemon_log_file();
+    let directory = path
+        .parent()
+        .ok_or_else(|| "无法定位分析引擎日志目录".to_string())?;
+    std::fs::create_dir_all(directory)
+        .map_err(|error| describe_error("无法创建分析引擎日志目录", error))?;
+    app.opener()
+        .open_path(directory.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| describe_error("无法打开分析引擎日志目录", error))
+}
+
+#[tauri::command]
 fn restart_app(app: tauri::AppHandle) {
     app.request_restart();
 }
@@ -709,6 +783,8 @@ pub fn run() {
             install_update,
             cancel_update,
             open_manual_update,
+            daemon_log_path,
+            open_daemon_log_directory,
             restart_app,
             desktop_session_token
         ])
@@ -721,6 +797,12 @@ pub fn run() {
             let process = match spawn_daemon(app.handle(), &desktop_token) {
                 Ok(child) => Some(child),
                 Err(error) => {
+                    emit_engine_event(
+                        app.handle(),
+                        "failed",
+                        None,
+                        Some(error.clone()),
+                    );
                     eprintln!("analysis sidecar failed to start: {error}");
                     None
                 }

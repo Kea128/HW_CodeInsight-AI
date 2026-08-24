@@ -37,11 +37,14 @@ def test_status_distinguishes_installed_runtime_from_models(monkeypatch):
     assert status["installed"] is True
     assert status["running"] is True
     assert status["ready"] is False
+    assert status["analysis_pending"] is True
+    assert status["model_error"] == "缺少模型：qwen3:1.7b, nomic-embed-text"
 
 
 def test_install_pulls_models_and_selects_ollama(monkeypatch, tmp_path):
     pulled = []
     saved = []
+    applied = []
     monkeypatch.setattr(
         ollama_installer, "find_ollama_executable", lambda: "ollama.exe"
     )
@@ -66,6 +69,9 @@ def test_install_pulls_models_and_selects_ollama(monkeypatch, tmp_path):
         lambda provider, key, **options: saved.append((provider, key, options)),
     )
     monkeypatch.setattr(ollama_installer, "load_desktop_settings", dict)
+    monkeypatch.setattr(
+        ollama_installer, "apply_desktop_settings", lambda: applied.append(True)
+    )
     monkeypatch.setattr(ollama_installer, "total_memory_gb", lambda: 16)
     monkeypatch.setattr(ollama_installer.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -81,7 +87,25 @@ def test_install_pulls_models_and_selects_ollama(monkeypatch, tmp_path):
             {"ollama_tier": "balanced", "ollama_model": "qwen3:4b"},
         )
     ]
-    assert service.status()["restart_required"] is True
+    assert applied == [True]
+    assert service.status()["restart_required"] is False
+
+
+def test_status_exposes_disk_shortfall(monkeypatch):
+    monkeypatch.setattr(ollama_installer, "total_memory_gb", lambda: 16)
+    monkeypatch.setattr(ollama_installer, "load_desktop_settings", dict)
+    monkeypatch.setattr(ollama_installer, "find_ollama_executable", lambda: None)
+    monkeypatch.setattr(
+        ollama_installer.shutil,
+        "disk_usage",
+        lambda _: SimpleNamespace(free=2 * 1024**3),
+    )
+
+    status = ollama_installer.OllamaInstaller().status()
+
+    assert status["disk_required_gb"] == 10
+    assert status["disk_error"] == "可用磁盘空间不足 10 GB"
+    assert status["can_analyze"] is False
 
 
 def test_recommended_tier_tracks_memory():

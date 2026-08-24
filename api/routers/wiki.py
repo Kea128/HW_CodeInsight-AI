@@ -5,6 +5,7 @@ from typing import Optional, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel
 
 from api.config import WIKI_AUTH_CODE, WIKI_AUTH_MODE, configs
 from api.logger import get_logger
@@ -27,11 +28,44 @@ from api.services.wiki import (
     read_wiki_cache,
     registry,
     WikiTask,
+    wiki_task_store,
+)
+from api.services.local_roots import (
+    register_selected_root,
+    registered_repository_roots,
+    require_registered_root,
+    unregister_selected_root,
 )
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["wiki"])
+
+
+class LocalRepositoryRootRequest(BaseModel):
+    path: str
+
+
+@router.get("/local_repo/roots")
+async def get_local_repo_roots():
+    """List roots registered by analysis or an explicit desktop selection."""
+    return {"roots": sorted(registered_repository_roots(wiki_task_store))}
+
+
+@router.post("/local_repo/roots", status_code=201)
+async def register_local_repo_root(request: LocalRepositoryRootRequest):
+    """Register the exact directory returned by the desktop folder picker."""
+    try:
+        return {"path": register_selected_root(request.path)}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.delete("/local_repo/roots")
+async def unregister_local_repo_root(path: str = Query(...)):
+    if not unregister_selected_root(path):
+        raise HTTPException(status_code=404, detail="Selected repository root not found")
+    return {"removed": True}
 
 
 @router.post("/export/wiki")
@@ -91,13 +125,10 @@ async def get_local_repo_structure(
             },
         )
 
-    if not os.path.isdir(path):
-        return JSONResponse(
-            status_code=404, content={"error": f"Directory not found: {path}"}
-        )
-
     try:
-        logger.info(f"Processing local repository at: {path}")
+        repository_root = require_registered_root(path, wiki_task_store)
+        path = str(repository_root)
+        logger.info("Processing registered local repository at: %s", path)
         file_tree_lines = []
         readme_content = ""
 
@@ -128,6 +159,10 @@ async def get_local_repo_structure(
 
         file_tree_str = "\n".join(sorted(file_tree_lines))
         return {"file_tree": file_tree_str, "readme": readme_content}
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except Exception as e:
         logger.error(f"Error processing local repository: {str(e)}")
         return JSONResponse(

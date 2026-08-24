@@ -13,7 +13,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from api.desktop_settings import load_desktop_settings, save_desktop_settings
+from api.desktop_settings import (
+    apply_desktop_settings,
+    load_desktop_settings,
+    save_desktop_settings,
+)
 
 OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
 EMBEDDER_MODEL = "nomic-embed-text"
@@ -41,6 +45,12 @@ MODEL_TIERS = {
     },
 }
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+class OllamaInstallError(RuntimeError):
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
 
 
 def total_memory_gb() -> int:
@@ -134,6 +144,7 @@ class OllamaInstaller:
             "message": "",
             "progress": 0,
             "restart_required": False,
+            "error_code": None,
         }
 
     def _update(self, **values: Any) -> None:
@@ -148,6 +159,27 @@ class OllamaInstaller:
         memory_gb = total_memory_gb()
         resolved_tier = resolve_tier(self._requested_tier, memory_gb)
         required_models = (MODEL_TIERS[resolved_tier]["model"], EMBEDDER_MODEL)
+        missing_models = [
+            model
+            for model in required_models
+            if not models or not _model_available(model, models)
+        ]
+        disk_required_gb = int(MODEL_TIERS[resolved_tier]["disk_gb"])
+        try:
+            disk_free_gb = round(shutil.disk_usage(Path.home()).free / 1024**3, 1)
+        except OSError:
+            disk_free_gb = None
+        disk_error = (
+            f"可用磁盘空间不足 {disk_required_gb} GB"
+            if disk_free_gb is not None and disk_free_gb < disk_required_gb
+            else None
+        )
+        model_error = (
+            f"缺少模型：{', '.join(missing_models)}"
+            if models is not None and missing_models
+            else None
+        )
+        ready = bool(models is not None and not missing_models)
         status.update(
             {
                 "installed": executable is not None,
@@ -158,15 +190,17 @@ class OllamaInstaller:
                 "recommended_tier": recommended_tier(memory_gb),
                 "model": MODEL_TIERS[resolved_tier]["model"],
                 "memory_gb": memory_gb,
+                "disk_free_gb": disk_free_gb,
+                "disk_required_gb": disk_required_gb,
+                "disk_error": disk_error,
+                "missing_models": missing_models,
+                "model_error": model_error,
                 "tiers": [
                     {"id": tier_id, **config} for tier_id, config in MODEL_TIERS.items()
                 ],
-                "ready": bool(
-                    models
-                    and all(
-                        _model_available(model, models) for model in required_models
-                    )
-                ),
+                "ready": ready,
+                "can_analyze": ready,
+                "analysis_pending": not ready,
             }
         )
         if status["ready"] and status["state"] == "idle":
@@ -190,6 +224,7 @@ class OllamaInstaller:
                 "message": "正在检查磁盘空间和现有组件…",
                 "progress": 1,
                 "restart_required": False,
+                "error_code": None,
             }
             self._worker = threading.Thread(
                 target=self._install, name="ollama-installer", daemon=True
@@ -206,9 +241,10 @@ class OllamaInstaller:
             free_bytes = shutil.disk_usage(Path.home()).free
             minimum_free_bytes = int(tier_config["disk_gb"]) * 1024**3
             if free_bytes < minimum_free_bytes:
-                raise RuntimeError(
+                raise OllamaInstallError(
                     f"可用磁盘空间不足 {tier_config['disk_gb']} GB，"
-                    f"无法安装{tier_config['label']}模型"
+                    f"无法安装{tier_config['label']}模型",
+                    "disk_space",
                 )
 
             executable = find_ollama_executable()
@@ -264,7 +300,9 @@ class OllamaInstaller:
                     stderr=subprocess.DEVNULL,
                 )
                 if result.returncode != 0:
-                    raise RuntimeError(f"模型 {model} 下载失败")
+                    raise OllamaInstallError(
+                        f"模型 {model} 下载失败", "model_download"
+                    )
 
             save_desktop_settings(
                 "ollama",
@@ -272,12 +310,14 @@ class OllamaInstaller:
                 ollama_tier=self._requested_tier,
                 ollama_model=str(tier_config["model"]),
             )
+            apply_desktop_settings()
             self._update(
                 state="ready",
                 step="本地 AI 已安装",
-                message="模型已准备完成，正在重启软件以应用设置。",
+                message="模型已准备完成，设置已热加载，可立即开始分析。",
                 progress=100,
-                restart_required=True,
+                restart_required=False,
+                error_code=None,
             )
         except Exception as error:  # noqa: BLE001 - surfaced as sanitized UI status
             self._update(
@@ -286,6 +326,7 @@ class OllamaInstaller:
                 message=str(error),
                 progress=0,
                 restart_required=False,
+                error_code=getattr(error, "code", "install"),
             )
         finally:
             installer_path.unlink(missing_ok=True)

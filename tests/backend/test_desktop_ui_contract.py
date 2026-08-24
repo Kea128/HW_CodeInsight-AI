@@ -22,9 +22,27 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert "modelConfigured" not in add_project_handler
 
 
-def test_terminal_auth_token_is_sent_in_handshake_not_url():
+def test_terminal_auth_token_is_sent_as_subprotocol_not_url_or_message():
     script = (ROOT / "desktop-ui" / "terminal-ui.js").read_text(encoding="utf-8")
 
-    assert "token," in script
+    assert "`codeinsight.${token}`" in script
     assert "?token=" not in script
+    assert "\n        token," not in script
     assert 'localStorage.getItem("codeinsight-api-base")' in script
+
+
+def test_engine_recovery_uses_health_backoff_and_safe_diagnostics():
+    html = (ROOT / "desktop-ui" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "desktop-ui" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="engine-recovery"' in html
+    assert 'id="retry-engine-button"' in html
+    assert 'id="open-engine-logs-button"' in html
+    assert 'id="copy-engine-diagnostics-button"' in html
+    assert 'api("/health", { timeout: 4000 })' in script
+    assert "performance.now() - startedAt < 90000" in script
+    assert "Math.min(delay * 2, 5000)" in script
+    assert 'setEngineState("auth"' in script
+    assert "desktopToken" not in script.split("const diagnostics = [", 1)[1].split(
+        "].join", 1
+    )[0]

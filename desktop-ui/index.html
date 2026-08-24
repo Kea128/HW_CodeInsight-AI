@@ -16,14 +16,13 @@
           <h1>CodeInsight-AI</h1>
         </div>
       </div>
-      <div class="header-actions">
+      <nav class="header-actions" aria-label="主要操作">
         <span id="engine-status" class="badge waiting">引擎启动中</span>
         <span id="model-status" class="badge waiting">AI 未检查</span>
         <button id="add-project-button">添加项目</button>
         <button id="connect-ubuntu-button" class="secondary">连接 Ubuntu</button>
         <button id="settings-button" class="secondary">设置</button>
-        <button id="update-button" class="secondary">检查更新</button>
-      </div>
+      </nav>
       <div id="update-status-panel" class="header-progress" hidden>
         <div class="install-progress"><span id="update-progress-bar"></span></div>
         <span id="update-progress-text">准备更新…</span>
@@ -32,6 +31,19 @@
     </header>
 
     <main>
+      <section id="engine-recovery" class="engine-recovery panel" hidden>
+        <div>
+          <p class="eyebrow">ENGINE DIAGNOSTICS</p>
+          <h2 id="engine-recovery-title">分析引擎正在启动</h2>
+          <p id="engine-recovery-message" class="message">首次启动可能需要一些时间。</p>
+        </div>
+        <div class="engine-recovery-actions">
+          <button id="retry-engine-button" type="button">重试</button>
+          <button id="open-engine-logs-button" type="button" class="secondary">打开日志目录</button>
+          <button id="copy-engine-diagnostics-button" type="button" class="secondary">复制诊断信息</button>
+        </div>
+      </section>
+
       <section id="setup-banner" class="setup-banner">
         <div>
           <p class="eyebrow">首次使用</p>
@@ -46,38 +58,69 @@
         <p id="ollama-message" class="message"></p>
       </section>
 
-      <section class="workspace panel">
+      <section class="workspace-overview" aria-label="工作区">
         <div class="section-heading">
           <div>
             <p class="eyebrow">WORKSPACE</p>
-            <h2>项目与分析</h2>
+            <h2>项目工作区</h2>
           </div>
-          <div class="segmented" id="task-filters">
-            <button data-filter="all" class="active">全部</button>
-            <button data-filter="active">运行中</button>
-            <button data-filter="completed">已完成</button>
-          </div>
+          <button id="refresh-button" class="secondary" type="button">刷新全部</button>
         </div>
-        <div class="workspace-group">
-          <h3>Ubuntu 项目</h3>
-          <div id="remote-project-list" class="remote-project-list">
-            <p class="empty">尚未连接 Ubuntu 项目。</p>
-          </div>
-        </div>
-        <div class="workspace-group">
-          <div class="section-heading compact">
-            <h3>分析任务</h3>
-            <button id="refresh-button" class="ghost">刷新</button>
-          </div>
-          <div id="task-list" class="task-list">
-            <p class="empty">正在读取任务…</p>
-          </div>
+        <div id="refresh-error" class="error-card" role="alert" hidden></div>
+        <div class="work-areas">
+          <section class="workspace panel" aria-labelledby="projects-heading">
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">PROJECTS</p>
+                <h2 id="projects-heading">持续项目</h2>
+              </div>
+              <button id="projects-add-button" class="ghost" type="button">添加</button>
+            </div>
+            <div class="workspace-group">
+              <h3>本地项目</h3>
+              <div id="continuous-project-list" class="project-list" aria-live="polite">
+                <p class="empty">正在读取项目…</p>
+              </div>
+            </div>
+            <div class="workspace-group">
+              <h3>Ubuntu 项目</h3>
+              <div id="remote-project-list" class="remote-project-list" aria-live="polite">
+                <p class="empty">尚未连接 Ubuntu 项目。</p>
+              </div>
+            </div>
+          </section>
+          <section class="workspace panel tasks-workspace" aria-labelledby="tasks-heading">
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">TASKS</p>
+                <h2 id="tasks-heading">分析任务</h2>
+              </div>
+              <div class="segmented" id="task-filters" role="tablist" aria-label="任务筛选">
+                <button type="button" role="tab" aria-selected="true" tabindex="0" data-filter="all" class="active">全部</button>
+                <button type="button" role="tab" aria-selected="false" tabindex="-1" data-filter="active">运行中</button>
+                <button type="button" role="tab" aria-selected="false" tabindex="-1" data-filter="completed">已完成</button>
+              </div>
+            </div>
+            <div id="task-list" class="task-list" aria-live="polite">
+              <p class="empty">正在读取任务…</p>
+            </div>
+          </section>
         </div>
       </section>
 
-      <section id="terminal-panel" class="terminal-panel" hidden>
+      <section class="terminal-placeholder panel" aria-labelledby="terminal-workspace-heading">
+        <div>
+          <p class="eyebrow">TERMINAL</p>
+          <h2 id="terminal-workspace-heading">终端工作区</h2>
+          <p class="hint">从 Ubuntu 项目打开终端后，它会固定在窗口底部；拖动上边缘可调整高度。</p>
+        </div>
+        <button id="terminal-open-project-button" type="button" class="secondary">选择 Ubuntu 项目</button>
+      </section>
+
+      <section id="terminal-panel" class="terminal-panel" aria-label="Ubuntu 终端工作区" hidden>
+        <div id="terminal-resize-handle" class="terminal-resize-handle" role="separator" aria-label="调整终端高度" aria-orientation="horizontal" tabindex="0"></div>
         <div class="terminal-toolbar">
-          <div id="terminal-tabs" class="terminal-tabs"></div>
+          <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端会话"></div>
           <div class="terminal-actions">
             <span id="terminal-status" class="terminal-status">未连接</span>
             <button id="terminal-reconnect-button" class="ghost" hidden>重连</button>
@@ -90,16 +133,16 @@
 
     <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
 
-    <aside id="project-drawer" class="drawer" aria-hidden="true">
+    <aside id="project-drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="project-drawer-title" aria-hidden="true" tabindex="-1">
       <div class="drawer-header">
-        <div><p class="eyebrow">NEW SOURCE</p><h2>添加项目</h2></div>
-        <button class="drawer-close ghost" data-close-drawer>关闭</button>
+        <div><p class="eyebrow">NEW SOURCE</p><h2 id="project-drawer-title">添加项目</h2></div>
+        <button class="drawer-close ghost" data-close-drawer type="button" aria-label="关闭添加项目对话框">关闭</button>
       </div>
-      <div class="segmented drawer-tabs">
-        <button id="source-local-tab" type="button" class="active">本地文件夹</button>
-        <button id="source-remote-tab" type="button">Ubuntu 远程</button>
+      <div class="segmented drawer-tabs" role="tablist" aria-label="项目来源">
+        <button id="source-local-tab" type="button" role="tab" aria-selected="true" aria-controls="source-local-panel" class="active">本地文件夹</button>
+        <button id="source-remote-tab" type="button" role="tab" aria-selected="false" aria-controls="source-remote-panel" tabindex="-1">Ubuntu 远程</button>
       </div>
-      <div id="source-local-panel">
+      <div id="source-local-panel" role="tabpanel" aria-labelledby="source-local-tab">
         <form id="project-form">
           <label>项目绝对路径<input id="project-path" required placeholder="D:\WorkSpace\my-project" /></label>
           <details>
@@ -115,8 +158,14 @@
         </form>
         <p id="form-message" class="message"></p>
       </div>
-      <div id="source-remote-panel" hidden>
+      <div id="source-remote-panel" role="tabpanel" aria-labelledby="source-remote-tab" hidden>
         <p class="hint">通过 SFTP 同步代码，并使用相同连接打开图形化终端。密码仅保存在 Windows 凭据管理器。</p>
+        <ol id="remote-flow" class="flow-steps" aria-label="Ubuntu 连接流程">
+          <li data-stage="fingerprint">确认指纹</li>
+          <li data-stage="connect">安全连接</li>
+          <li data-stage="sync">同步代码</li>
+          <li data-stage="analysis">AI 分析</li>
+        </ol>
         <p id="remote-ai-notice" class="notice" hidden>可以先连接并同步 Ubuntu；AI 就绪后会自动开始分析。</p>
         <form id="remote-form">
           <div class="row">
@@ -138,10 +187,10 @@
       </div>
     </aside>
 
-    <aside id="settings-drawer" class="drawer" aria-hidden="true">
+    <aside id="settings-drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title" aria-hidden="true" tabindex="-1">
       <div class="drawer-header">
-        <div><p class="eyebrow">PREFERENCES</p><h2>AI 与应用设置</h2></div>
-        <button class="drawer-close ghost" data-close-drawer>关闭</button>
+        <div><p class="eyebrow">PREFERENCES</p><h2 id="settings-drawer-title">AI 与应用设置</h2></div>
+        <button class="drawer-close ghost" data-close-drawer type="button" aria-label="关闭设置对话框">关闭</button>
       </div>
       <form id="model-form">
         <label>模型服务
@@ -151,6 +200,7 @@
             <option value="google">Google Gemini</option>
           </select>
         </label>
+        <p id="provider-state" class="hint"></p>
         <label id="api-key-label">API Key<input id="model-api-key" type="password" autocomplete="off" placeholder="输入后保存在本机" /></label>
         <button type="submit">保存并重启引擎</button>
       </form>
@@ -170,12 +220,17 @@
         <p id="ollama-tier-hint" class="hint"></p>
         <button id="settings-install-ollama-button" type="button" class="secondary">安装或升级本地模型</button>
       </div>
+      <div class="settings-block">
+        <h3>应用更新</h3>
+        <p class="hint">检查并安装 CodeInsight-AI 桌面更新。</p>
+        <button id="update-button" type="button" class="secondary">检查更新</button>
+      </div>
     </aside>
 
-    <aside id="result-panel" class="drawer result-drawer" aria-hidden="true">
+    <aside id="result-panel" class="drawer result-drawer" role="dialog" aria-modal="true" aria-labelledby="result-title" aria-hidden="true" tabindex="-1">
       <div class="drawer-header">
         <div><p class="eyebrow">ANALYSIS</p><h2 id="result-title">分析结果</h2></div>
-        <button id="close-result-button" class="drawer-close ghost">关闭</button>
+        <button id="close-result-button" class="drawer-close ghost" type="button" aria-label="关闭分析详情">关闭</button>
       </div>
       <p id="result-message" class="message"></p>
       <div id="result-pages" class="result-pages"></div>

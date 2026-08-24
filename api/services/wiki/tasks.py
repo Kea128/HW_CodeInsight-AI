@@ -84,6 +84,7 @@ class WikiTask(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     request: WikiTaskRequest
+    persisted_id: str | None = Field(default=None, exclude=True, repr=False)
     status: TaskStatus = TaskStatus.PENDING
     pages_done: int = 0
     current_page_ids: list[str] = Field(default_factory=list)
@@ -120,6 +121,10 @@ class WikiTask(BaseModel):
             request=_resolve_desktop_model(
                 WikiTaskRequest.model_validate(snapshot["request"])
             ),
+            # Version 4 and older used repository-only IDs. Retain that ID for
+            # recovered records so existing API links and foreign keys remain
+            # valid; newly submitted tasks use the expanded request identity.
+            persisted_id=snapshot["id"],
             status=TaskStatus(snapshot["status"]),
             pages_done=snapshot.get("pages_done", len(generated)),
             current_page_ids=[],
@@ -139,7 +144,7 @@ class WikiTask(BaseModel):
 
     @property
     def repo_key(self) -> str:
-        return self.request.repo_key
+        return self.persisted_id or self.request.repo_key
 
     def snapshot(self) -> dict[str, Any]:
         # Access tokens are runtime secrets and must never be persisted.
@@ -239,6 +244,10 @@ class TaskRegistry:
         task.persist_callback = self._persist
         return task
 
+    @property
+    def store(self) -> WikiTaskStore | None:
+        return self._store
+
     def get(self, id: str) -> WikiTask | None:
         return self._tasks.get(id)
 
@@ -262,9 +271,21 @@ class TaskRegistry:
         key = task.repo_key
         async with self._lock:
             exist_task = self.get(key)
+            if exist_task is None:
+                # A recovered pre-v5 task retains its legacy persisted ID.
+                # Match it by the new canonical request identity so a daemon
+                # upgrade cannot start duplicate work for the same variant.
+                exist_task = next(
+                    (
+                        candidate
+                        for candidate in self._tasks.values()
+                        if candidate.request.repo_key == key
+                    ),
+                    None,
+                )
             if exist_task and not exist_task.status.is_terminal():
                 return WikiTaskSubmitResult(
-                    task_id=key,
+                    task_id=exist_task.repo_key,
                     status=exist_task.status,
                     joined=True,
                 )
@@ -303,9 +324,9 @@ class TaskRegistry:
         self._runner = async_func
         if not self._store:
             return 0
-        recovered = 0
+        resumed = 0
         async with self._lock:
-            for snapshot in self._store.list_all():
+            for snapshot in self._store.list_recoverable():
                 key = snapshot["id"]
                 if key in self._tasks:
                     continue
@@ -322,10 +343,10 @@ class TaskRegistry:
                 ):
                     task.status = TaskStatus.PENDING
                     task.task = asyncio.create_task(self._run(task, async_func))
+                    task.persist("recovered")
+                    resumed += 1
                 self._tasks[key] = task
-                task.persist("recovered")
-                recovered += 1
-        return recovered
+        return resumed
 
     async def pause(self, task_id: str) -> WikiTask | None:
         async with self._lock:
@@ -379,7 +400,8 @@ class TaskRegistry:
         asyncio.create_task(remove())
 
 
-registry = TaskRegistry(store=WikiTaskStore())
+wiki_task_store = WikiTaskStore()
+registry = TaskRegistry(store=wiki_task_store)
 
 
 async def generate_repo_wiki(task: WikiTask) -> None:

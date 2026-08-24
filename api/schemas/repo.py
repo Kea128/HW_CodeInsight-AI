@@ -1,4 +1,7 @@
+import hashlib
+import re
 from enum import Enum
+
 from pydantic import BaseModel, Field, field_validator
 
 from api.schemas.base import RepoRequestBase
@@ -20,8 +23,26 @@ class WikiTaskRequest(RepoRequestBase):
     )
 
     @property
-    def repo_key(self) -> str:
+    def legacy_repo_key(self) -> str:
         return f"{self.type}_{self.owner}_{self.repo}"
+
+    @property
+    def repo_key(self) -> str:
+        """Identity for one independently generated wiki.
+
+        Language and the effective provider/model are generation inputs, so
+        requests that differ on them must not join the same running task.
+        Keep the legacy repository prefix for diagnostics and migration, while
+        hashing model coordinates to keep IDs safe in URL path segments.
+        """
+        language = (
+            re.sub(r"[^A-Za-z0-9.-]+", "-", self.language).strip("-") or "default"
+        )
+        model_identity = f"{self.provider}\0{self.model or 'default'}".encode(
+            "utf-8"
+        )
+        model_digest = hashlib.sha256(model_identity).hexdigest()[:12]
+        return f"{self.legacy_repo_key}_{language}_{model_digest}"
 
 
 class TaskStatus(str, Enum):

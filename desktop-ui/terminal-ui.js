@@ -7,6 +7,7 @@ const viewsElement = document.querySelector("#terminal-views");
 const statusElement = document.querySelector("#terminal-status");
 const reconnectButton = document.querySelector("#terminal-reconnect-button");
 const collapseButton = document.querySelector("#terminal-collapse-button");
+const resizeHandle = document.querySelector("#terminal-resize-handle");
 const sessions = new Map();
 let activeId = null;
 let desktopToken = null;
@@ -27,6 +28,8 @@ function activateSession(id) {
   activeId = id;
   sessions.forEach((session, sessionId) => {
     session.tab.classList.toggle("active", sessionId === id);
+    session.tab.setAttribute("aria-selected", String(sessionId === id));
+    session.tab.tabIndex = sessionId === id ? 0 : -1;
     session.view.hidden = sessionId !== id;
   });
   const session = sessions.get(id);
@@ -55,6 +58,8 @@ function closeSession(id) {
   }
   if (!sessions.size) {
     panel.hidden = true;
+    document.body.classList.remove("terminal-open");
+    document.documentElement.style.removeProperty("--terminal-height");
     activeId = null;
   }
 }
@@ -70,7 +75,7 @@ async function connectSession(session) {
   const apiBase = localStorage.getItem("codeinsight-api-base") || "http://127.0.0.1:8001";
   const socketUrl = new URL("/ws/terminal", apiBase);
   socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(socketUrl);
+  const socket = new WebSocket(socketUrl, [`codeinsight.${token}`]);
   socket.binaryType = "arraybuffer";
   session.socket = socket;
 
@@ -79,7 +84,6 @@ async function connectSession(session) {
     socket.send(
       JSON.stringify({
         type: "open",
-        token,
         project_id: session.project.id,
         columns: session.terminal.cols,
         rows: session.terminal.rows,
@@ -151,6 +155,9 @@ function createSession(project) {
 
   const tab = document.createElement("div");
   tab.className = "terminal-tab";
+  tab.setAttribute("role", "tab");
+  tab.setAttribute("aria-selected", "false");
+  tab.tabIndex = -1;
   const label = document.createElement("span");
   label.textContent = `${project.username}@${project.host}`;
   const close = document.createElement("button");
@@ -164,10 +171,22 @@ function createSession(project) {
   });
   tab.append(label, close);
   tab.addEventListener("click", () => activateSession(id));
+  tab.addEventListener("keydown", (event) => {
+    if (event.target !== tab || !["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    activateSession(id);
+  });
 
   const view = document.createElement("div");
   view.className = "terminal-view";
+  view.setAttribute("role", "tabpanel");
   view.hidden = true;
+  const viewId = `terminal-view-${id}`;
+  const tabId = `terminal-tab-${id}`;
+  view.id = viewId;
+  tab.id = tabId;
+  tab.setAttribute("aria-controls", viewId);
+  view.setAttribute("aria-labelledby", tabId);
   tabsElement.append(tab);
   viewsElement.append(view);
   terminal.open(view);
@@ -198,6 +217,7 @@ function createSession(project) {
   });
 
   panel.hidden = false;
+  document.body.classList.add("terminal-open");
   panel.classList.remove("collapsed");
   collapseButton.textContent = "收起";
   activateSession(id);
@@ -221,6 +241,46 @@ window.addEventListener("resize", () => {
   const session = sessions.get(activeId);
   if (session && !panel.classList.contains("collapsed")) session.fit.fit();
 });
+const panelResizeObserver = new ResizeObserver(() => {
+  if (!panel.hidden) {
+    document.documentElement.style.setProperty("--terminal-height", `${panel.offsetHeight}px`);
+  }
+});
+panelResizeObserver.observe(panel);
+function setPanelHeight(height) {
+  const clamped = Math.max(160, Math.min(window.innerHeight * .8, height));
+  panel.style.height = `${clamped}px`;
+}
+resizeHandle.addEventListener("pointerdown", (event) => {
+  if (panel.classList.contains("collapsed")) return;
+  const startY = event.clientY;
+  const startHeight = panel.offsetHeight;
+  resizeHandle.setPointerCapture(event.pointerId);
+  const move = (moveEvent) => setPanelHeight(startHeight + startY - moveEvent.clientY);
+  const stop = () => {
+    resizeHandle.removeEventListener("pointermove", move);
+    resizeHandle.removeEventListener("pointerup", stop);
+    resizeHandle.removeEventListener("pointercancel", stop);
+  };
+  resizeHandle.addEventListener("pointermove", move);
+  resizeHandle.addEventListener("pointerup", stop);
+  resizeHandle.addEventListener("pointercancel", stop);
+});
+resizeHandle.addEventListener("keydown", (event) => {
+  if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+  event.preventDefault();
+  setPanelHeight(panel.offsetHeight + (event.key === "ArrowUp" ? 24 : -24));
+});
+tabsElement.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const ids = [...sessions.keys()];
+  const current = Math.max(0, ids.indexOf(activeId));
+  let next = event.key === "Home" ? 0 : event.key === "End" ? ids.length - 1 : current;
+  if (event.key === "ArrowLeft") next = (current - 1 + ids.length) % ids.length;
+  if (event.key === "ArrowRight") next = (current + 1) % ids.length;
+  event.preventDefault();
+  activateSession(ids[next]);
+});
 reconnectButton.addEventListener("click", () => {
   const session = sessions.get(activeId);
   if (session) connectSession(session);
@@ -231,4 +291,7 @@ collapseButton.addEventListener("click", () => {
   if (!panel.classList.contains("collapsed")) {
     requestAnimationFrame(() => sessions.get(activeId)?.fit.fit());
   }
+  requestAnimationFrame(() => {
+    document.documentElement.style.setProperty("--terminal-height", `${panel.offsetHeight}px`);
+  });
 });

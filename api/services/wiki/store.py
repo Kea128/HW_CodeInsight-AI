@@ -13,7 +13,7 @@ from typing import Any
 from api.utils import deepwiki_root
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 
 def default_database_path() -> str:
@@ -42,100 +42,155 @@ class WikiTaskStore:
 
     def _initialize(self) -> None:
         with self._lock, self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS schema_migrations (
-                    version INTEGER PRIMARY KEY,
-                    applied_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS wiki_tasks (
-                    id TEXT PRIMARY KEY,
-                    request_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    pages_done INTEGER NOT NULL DEFAULT 0,
-                    current_page_ids_json TEXT NOT NULL DEFAULT '[]',
-                    wiki_structure_json TEXT,
-                    generated_pages_json TEXT NOT NULL DEFAULT '{}',
-                    default_branch TEXT NOT NULL DEFAULT 'main',
-                    error TEXT,
-                    submitted_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    pause_requested INTEGER NOT NULL DEFAULT 0,
-                    cancel_requested INTEGER NOT NULL DEFAULT 0
-                );
-
-                CREATE TABLE IF NOT EXISTS task_events (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    task_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    payload_json TEXT NOT NULL DEFAULT '{}',
-                    created_at INTEGER NOT NULL,
-                    FOREIGN KEY(task_id) REFERENCES wiki_tasks(id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_wiki_tasks_status
-                    ON wiki_tasks(status, submitted_at);
-                CREATE INDEX IF NOT EXISTS idx_task_events_task
-                    ON task_events(task_id, sequence);
-
-                CREATE TABLE IF NOT EXISTS continuous_projects (
-                    id TEXT PRIMARY KEY,
-                    request_json TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    night_start TEXT,
-                    night_end TEXT,
-                    poll_seconds INTEGER NOT NULL DEFAULT 15,
-                    file_hashes_json TEXT NOT NULL DEFAULT '{}',
-                    last_scan_at INTEGER,
-                    last_task_id TEXT,
-                    updated_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS remote_projects (
-                    id TEXT PRIMARY KEY,
-                    host TEXT NOT NULL,
-                    port INTEGER NOT NULL DEFAULT 22,
-                    username TEXT NOT NULL,
-                    remote_path TEXT NOT NULL,
-                    local_path TEXT NOT NULL,
-                    credential_id TEXT NOT NULL,
-                    provider TEXT NOT NULL DEFAULT 'ollama',
-                    model TEXT,
-                    language TEXT NOT NULL DEFAULT 'zh',
-                    host_fingerprint TEXT,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    poll_seconds INTEGER NOT NULL DEFAULT 60,
-                    last_sync_at INTEGER,
-                    last_error TEXT,
-                    stage TEXT NOT NULL DEFAULT 'saved',
-                    files_seen INTEGER NOT NULL DEFAULT 0,
-                    files_excluded INTEGER NOT NULL DEFAULT 0,
-                    files_oversize INTEGER NOT NULL DEFAULT 0,
-                    symlinks_skipped INTEGER NOT NULL DEFAULT 0,
-                    updated_at INTEGER NOT NULL
-                );
-                """
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                "version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)"
             )
-            remote_columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(remote_projects)")
+            current = connection.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+            ).fetchone()[0]
+            migrations = {
+                1: self._migration_1_tasks,
+                2: self._migration_2_continuous,
+                3: self._migration_3_remote,
+                4: self._migration_4_remote_status,
+                5: self._migration_5_pending_changes,
+                6: self._migration_6_retention_indexes,
             }
-            for name, definition in {
+            for version in range(current + 1, SCHEMA_VERSION + 1):
+                migration = migrations[version]
+                with connection:
+                    migration(connection)
+                    connection.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                        (version, int(time.time() * 1000)),
+                    )
+
+    @staticmethod
+    def _migration_1_tasks(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS wiki_tasks (
+                id TEXT PRIMARY KEY,
+                request_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                pages_done INTEGER NOT NULL DEFAULT 0,
+                current_page_ids_json TEXT NOT NULL DEFAULT '[]',
+                wiki_structure_json TEXT,
+                generated_pages_json TEXT NOT NULL DEFAULT '{}',
+                default_branch TEXT NOT NULL DEFAULT 'main',
+                error TEXT,
+                submitted_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                pause_requested INTEGER NOT NULL DEFAULT 0,
+                cancel_requested INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS task_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES wiki_tasks(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_wiki_tasks_status
+                ON wiki_tasks(status, submitted_at);
+            CREATE INDEX IF NOT EXISTS idx_task_events_task
+                ON task_events(task_id, sequence);
+            """
+        )
+
+    @staticmethod
+    def _migration_2_continuous(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS continuous_projects (
+                id TEXT PRIMARY KEY,
+                request_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                night_start TEXT,
+                night_end TEXT,
+                poll_seconds INTEGER NOT NULL DEFAULT 15,
+                file_hashes_json TEXT NOT NULL DEFAULT '{}',
+                last_scan_at INTEGER,
+                last_task_id TEXT,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+
+    @staticmethod
+    def _migration_3_remote(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS remote_projects (
+                id TEXT PRIMARY KEY,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 22,
+                username TEXT NOT NULL,
+                remote_path TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                credential_id TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT 'ollama',
+                model TEXT,
+                language TEXT NOT NULL DEFAULT 'zh',
+                host_fingerprint TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                poll_seconds INTEGER NOT NULL DEFAULT 60,
+                last_sync_at INTEGER,
+                last_error TEXT,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+
+    @staticmethod
+    def _add_columns(
+        connection: sqlite3.Connection,
+        table: str,
+        definitions: dict[str, str],
+    ) -> None:
+        columns = {
+            row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
+        }
+        for name, definition in definitions.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
+                )
+
+    @classmethod
+    def _migration_4_remote_status(cls, connection: sqlite3.Connection) -> None:
+        cls._add_columns(
+            connection,
+            "remote_projects",
+            {
                 "stage": "TEXT NOT NULL DEFAULT 'saved'",
                 "files_seen": "INTEGER NOT NULL DEFAULT 0",
                 "files_excluded": "INTEGER NOT NULL DEFAULT 0",
                 "files_oversize": "INTEGER NOT NULL DEFAULT 0",
                 "symlinks_skipped": "INTEGER NOT NULL DEFAULT 0",
-            }.items():
-                if name not in remote_columns:
-                    connection.execute(
-                        f"ALTER TABLE remote_projects ADD COLUMN {name} {definition}"
-                    )
-            connection.execute(
-                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                (SCHEMA_VERSION, int(time.time() * 1000)),
-            )
+            },
+        )
+
+    @classmethod
+    def _migration_5_pending_changes(cls, connection: sqlite3.Connection) -> None:
+        cls._add_columns(
+            connection,
+            "continuous_projects",
+            {"pending_changes": "INTEGER NOT NULL DEFAULT 0"},
+        )
+
+    @staticmethod
+    def _migration_6_retention_indexes(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_events_created "
+            "ON task_events(created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wiki_tasks_status_updated "
+            "ON wiki_tasks(status, updated_at)"
+        )
 
     @staticmethod
     def _json(value: Any) -> str:
@@ -223,6 +278,38 @@ class WikiTaskStore:
             ).fetchall()
         return [self._decode(row) for row in rows]
 
+    def prune_terminal_events(
+        self, *, retention_days: int = 90, max_events_per_task: int = 200
+    ) -> int:
+        """Bound event growth while retaining task records and a final event."""
+        cutoff = int((time.time() - max(1, retention_days) * 86400) * 1000)
+        limit = max(1, max_events_per_task)
+        removed = 0
+        with self._lock, self._connect() as connection:
+            task_ids = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM wiki_tasks "
+                    "WHERE status IN ('completed', 'failed', 'cancelled')"
+                )
+            ]
+            for task_id in task_ids:
+                cursor = connection.execute(
+                    "DELETE FROM task_events WHERE task_id = ? AND created_at < ? "
+                    "AND sequence != (SELECT MAX(sequence) FROM task_events "
+                    "WHERE task_id = ?)",
+                    (task_id, cutoff, task_id),
+                )
+                removed += cursor.rowcount
+                cursor = connection.execute(
+                    "DELETE FROM task_events WHERE task_id = ? AND sequence NOT IN "
+                    "(SELECT sequence FROM task_events WHERE task_id = ? "
+                    "ORDER BY sequence DESC LIMIT ?)",
+                    (task_id, task_id, limit),
+                )
+                removed += cursor.rowcount
+        return removed
+
     def save_continuous_project(self, project: dict[str, Any]) -> None:
         now = int(time.time() * 1000)
         with self._lock, self._connect() as connection:
@@ -231,8 +318,8 @@ class WikiTaskStore:
                 INSERT INTO continuous_projects (
                     id, request_json, enabled, night_start, night_end,
                     poll_seconds, file_hashes_json, last_scan_at,
-                    last_task_id, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_task_id, pending_changes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     request_json=excluded.request_json,
                     enabled=excluded.enabled,
@@ -242,6 +329,7 @@ class WikiTaskStore:
                     file_hashes_json=excluded.file_hashes_json,
                     last_scan_at=excluded.last_scan_at,
                     last_task_id=excluded.last_task_id,
+                    pending_changes=excluded.pending_changes,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -254,6 +342,7 @@ class WikiTaskStore:
                     self._json(project.get("file_hashes", {})),
                     project.get("last_scan_at"),
                     project.get("last_task_id"),
+                    int(project.get("pending_changes", False)),
                     now,
                 ),
             )
@@ -274,6 +363,7 @@ class WikiTaskStore:
                 "file_hashes": json.loads(row["file_hashes_json"]),
                 "last_scan_at": row["last_scan_at"],
                 "last_task_id": row["last_task_id"],
+                "pending_changes": bool(row["pending_changes"]),
             }
             for row in rows
         ]

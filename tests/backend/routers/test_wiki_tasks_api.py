@@ -71,7 +71,7 @@ def test_submit_then_progress_to_completed(monkeypatch):
         data = r.json()
         assert data["created"] is True and data["status"] == "pending"
         task_id = data["task_id"]
-        assert task_id == "github_o_r"
+        assert task_id == WikiTaskRequest(**body).repo_key
 
         for _ in range(50):
             g = client.get(f"/wiki/tasks/{task_id}")
@@ -86,7 +86,7 @@ def test_submit_then_progress_to_completed(monkeypatch):
         assert "token" not in done
 
 
-def test_submit_twice_joins(monkeypatch):
+def test_submit_separates_different_languages(monkeypatch):
     _patch_stubs(monkeypatch)
     # make generation block so the first task stays active for the second submit
     started = {"go": False}
@@ -104,10 +104,10 @@ def test_submit_twice_joins(monkeypatch):
     with TestClient(app) as client:
         body = {"owner": "o", "repo": "r", "type": "github", "repo_url": "https://github.com/o/r"}
         r1 = client.post("/wiki/tasks", json=body).json()
-        # second submit (different language) must JOIN the active task
+        # Different output languages are independently generated artifacts.
         r2 = client.post("/wiki/tasks", json={**body, "language": "ja"}).json()
-        assert r2["joined"] is True and r2["created"] is False
-        assert r2["task_id"] == r1["task_id"]
+        assert r2["created"] is True and r2["joined"] is False
+        assert r2["task_id"] != r1["task_id"]
         started["go"] = True
 
 

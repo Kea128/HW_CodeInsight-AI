@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Literal
@@ -15,6 +16,24 @@ KEY_ENVIRONMENTS = {
     "google": "GOOGLE_API_KEY",
 }
 KEYRING_SERVICE = "CodeInsight-AI.Models"
+
+
+class CredentialStorageUnavailable(RuntimeError):
+    """Raised when the operating-system credential vault cannot be used."""
+
+
+def _credential_error(action: str) -> CredentialStorageUnavailable:
+    return CredentialStorageUnavailable(
+        f"Windows 凭据管理器不可用，无法{action} AI 密钥。"
+        "请确认 Credential Manager 服务正在运行，然后重试"
+    )
+
+
+def _get_password(provider: str) -> str | None:
+    try:
+        return keyring.get_password(KEYRING_SERVICE, provider)
+    except keyring.errors.KeyringError as error:
+        raise _credential_error("读取") from error
 
 
 def settings_path() -> Path:
@@ -50,8 +69,9 @@ def migrate_plaintext_api_keys() -> dict[str, str]:
             try:
                 if value:
                     keyring.set_password(KEYRING_SERVICE, provider, value)
-            except keyring.errors.KeyringError:
-                continue
+            except keyring.errors.KeyringError as error:
+                # Never delete the only copy when migration to the vault failed.
+                raise _credential_error("迁移") from error
             data.pop(field)
             changed = True
     if changed:
@@ -60,10 +80,7 @@ def migrate_plaintext_api_keys() -> dict[str, str]:
 
 
 def api_key_configured(provider: str) -> bool:
-    try:
-        return bool(keyring.get_password(KEYRING_SERVICE, provider))
-    except keyring.errors.KeyringError:
-        return False
+    return bool(_get_password(provider))
 
 
 def load_desktop_settings() -> dict[str, str]:
@@ -87,12 +104,17 @@ def save_desktop_settings(
     if api_key is not None:
         stripped_key = api_key.strip()
         if stripped_key:
-            keyring.set_password(KEYRING_SERVICE, provider, stripped_key)
+            try:
+                keyring.set_password(KEYRING_SERVICE, provider, stripped_key)
+            except keyring.errors.KeyringError as error:
+                raise _credential_error("保存") from error
         else:
             try:
                 keyring.delete_password(KEYRING_SERVICE, provider)
-            except keyring.errors.KeyringError:
+            except keyring.errors.PasswordDeleteError:
                 pass
+            except keyring.errors.KeyringError as error:
+                raise _credential_error("删除") from error
     if ollama_tier is not None:
         data["ollama_tier"] = ollama_tier
     if ollama_model is not None:
@@ -107,19 +129,32 @@ def selected_ollama_model() -> str | None:
 
 
 def apply_desktop_settings() -> dict[str, str]:
-    data = load_desktop_settings()
+    try:
+        data = load_desktop_settings()
+    except CredentialStorageUnavailable:
+        # Keep the API alive so the settings endpoint can return an actionable,
+        # recoverable error instead of making the whole sidecar fail to start.
+        data = _read_settings_file()
+        for provider_name in KEY_ENVIRONMENTS:
+            data.pop(f"{provider_name}_api_key", None)
     provider = data.get("provider", "openai").lower()
     if provider not in SUPPORTED_PROVIDERS:
         provider = "openai"
 
     os.environ["CODEINSIGHT_DESKTOP_PROVIDER"] = provider
     os.environ["DEEPWIKI_EMBEDDER_TYPE"] = provider
+    # api.config snapshots this value at import time. Update the loaded module
+    # so desktop settings and post-install Ollama selection take effect without
+    # restarting the daemon; future imports still read the environment above.
+    config_module = sys.modules.get("api.config")
+    if config_module is not None:
+        config_module.EMBEDDER_TYPE = provider
     if data.get("ollama_model"):
         os.environ["CODEINSIGHT_OLLAMA_MODEL"] = data["ollama_model"]
     environment = KEY_ENVIRONMENTS.get(provider)
     try:
-        api_key = keyring.get_password(KEYRING_SERVICE, provider)
-    except keyring.errors.KeyringError:
+        api_key = _get_password(provider)
+    except CredentialStorageUnavailable:
         api_key = None
     if environment and api_key:
         os.environ[environment] = api_key

@@ -1,11 +1,15 @@
-from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from api.config import configs
-from api.desktop_settings import load_desktop_settings, save_desktop_settings
+from api.desktop_settings import (
+    CredentialStorageUnavailable,
+    apply_desktop_settings,
+    load_desktop_settings,
+    save_desktop_settings,
+)
 from api.logger import get_logger
 from api.schemas import Model, ModelConfig, Provider
 from api.services.ollama_installer import installer
@@ -26,6 +30,10 @@ class DesktopSettingsStatus(BaseModel):
     restart_required: bool = False
     ollama_tier: str = "auto"
     ollama_model: str | None = None
+    analysis_pending: bool = False
+    model_error: str | None = None
+    disk_error: str | None = None
+    ollama_error: str | None = None
 
 
 class OllamaInstallRequest(BaseModel):
@@ -36,8 +44,9 @@ def _desktop_settings_status(
     data: dict[str, str], *, restart_required: bool = False
 ) -> DesktopSettingsStatus:
     provider = data.get("provider", "openai")
+    ollama_status = installer.status() if provider == "ollama" else {}
     configured = (
-        installer.status()["ready"]
+        bool(ollama_status.get("ready"))
         if provider == "ollama"
         else bool(data.get(f"{provider}_api_key"))
     )
@@ -47,28 +56,33 @@ def _desktop_settings_status(
         restart_required=restart_required,
         ollama_tier=data.get("ollama_tier", "auto"),
         ollama_model=data.get("ollama_model"),
+        analysis_pending=bool(ollama_status.get("analysis_pending", False)),
+        model_error=ollama_status.get("model_error"),
+        disk_error=ollama_status.get("disk_error"),
+        ollama_error=(
+            str(ollama_status.get("message") or "Ollama 安装失败")
+            if ollama_status.get("state") == "error"
+            else None
+        ),
     )
-
-
-@router.get("/health")
-async def health_check():
-    """Health check endpoint for Docker and monitoring"""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "service": "codeinsight-engine",
-    }
 
 
 @router.get("/desktop/settings", response_model=DesktopSettingsStatus)
 async def get_desktop_settings():
-    return _desktop_settings_status(load_desktop_settings())
+    try:
+        return _desktop_settings_status(load_desktop_settings())
+    except CredentialStorageUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.post("/desktop/settings", response_model=DesktopSettingsStatus)
 async def update_desktop_settings(request: DesktopSettingsRequest):
-    data = save_desktop_settings(request.provider, request.api_key)
-    return _desktop_settings_status(data, restart_required=True)
+    try:
+        save_desktop_settings(request.provider, request.api_key)
+        data = apply_desktop_settings()
+        return _desktop_settings_status(data, restart_required=False)
+    except CredentialStorageUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.get("/desktop/ollama/status")
