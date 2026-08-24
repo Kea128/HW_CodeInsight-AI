@@ -33,7 +33,9 @@ def test_health_is_single_protected_readiness_route(monkeypatch):
     monkeypatch.setattr(main, "is_development", False)
     monkeypatch.setenv("CODEINSIGHT_DESKTOP_TOKEN", "desktop-secret")
 
-    health_routes = [route for route in main.app.routes if route.path == "/health"]
+    health_routes = [
+        route for route in main.app.routes if getattr(route, "path", None) == "/health"
+    ]
     assert len(health_routes) == 1
     with TestClient(main.app) as client:
         assert client.get("/health").status_code == 401

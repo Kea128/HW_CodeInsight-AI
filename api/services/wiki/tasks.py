@@ -432,11 +432,6 @@ async def generate_repo_wiki(task: WikiTask) -> None:
         task.status = TaskStatus.GENERATING
         task.persist("generating")
         pages = await _generate_pages(task, structure)
-        if pages and all(
-            page.content.startswith("Error generating content:")
-            for page in pages.values()
-        ):
-            raise RuntimeError("All wiki pages failed to generate")
 
         await task.control_point()
         await _save(task, pages)
