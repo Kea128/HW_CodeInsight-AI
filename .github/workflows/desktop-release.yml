@@ -56,6 +56,15 @@ jobs:
           poetry install -C api --no-interaction
           poetry -C api run python -m pip install pyinstaller
           poetry -C api run python -c "import keyring; import paramiko; import uvicorn; import api.main; print('Backend imports verified')"
+          $encodingUrl = "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+          $encodingCacheKey = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
+          $encodingPath = "api/tiktoken-cache/$encodingCacheKey"
+          New-Item -ItemType Directory -Force "api/tiktoken-cache" | Out-Null
+          Invoke-WebRequest -UseBasicParsing -Uri $encodingUrl -OutFile $encodingPath
+          $encodingHash = (Get-FileHash $encodingPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($encodingHash -ne "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7") {
+            throw "Bundled tiktoken encoding hash mismatch: $encodingHash"
+          }
           $version = (Get-Content package.json | ConvertFrom-Json).version
           $parts = $version.Split(".")
           @"
@@ -77,7 +86,7 @@ jobs:
             ]
           )
           "@ | Set-Content api/daemon-version.txt -Encoding UTF8
-          poetry -C api run python -m PyInstaller --noconfirm --clean --onefile --windowed --name codeinsight-daemon --version-file daemon-version.txt --paths .. --collect-all uvicorn --collect-all tiktoken --collect-submodules tiktoken_ext --collect-all adalflow --collect-all paramiko --collect-all keyring --collect-submodules keyring.backends --copy-metadata keyring --add-data "config;api/config" daemon.py
+          poetry -C api run python -m PyInstaller --noconfirm --clean --onefile --windowed --name codeinsight-daemon --version-file daemon-version.txt --paths .. --collect-all uvicorn --collect-all tiktoken --collect-submodules tiktoken_ext --collect-all adalflow --collect-all paramiko --collect-all keyring --collect-submodules keyring.backends --copy-metadata keyring --add-data "config;api/config" --add-data "tiktoken-cache;tiktoken_cache" daemon.py
           New-Item -ItemType Directory -Force src-tauri/binaries
           Copy-Item api/dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
 
@@ -111,6 +120,10 @@ jobs:
             Invoke-RestMethod -Uri "http://127.0.0.1:8001/remote/projects" -Headers @{
               "X-CodeInsight-Token" = "desktop-ci-token"
             } -TimeoutSec 5 | Out-Null
+            $daemonLog = Join-Path $env:LOCALAPPDATA "CodeInsight-AI/daemon.log"
+            if (-not (Test-Path $daemonLog) -or (Get-Content $daemonLog -Raw) -notmatch "using bundled tiktoken cache") {
+              throw "Frozen daemon did not activate its bundled tiktoken cache"
+            }
           } finally {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
           }

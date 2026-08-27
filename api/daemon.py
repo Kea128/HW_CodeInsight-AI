@@ -3,10 +3,13 @@
 import faulthandler
 import os
 import shutil
+import sys
 import tempfile
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+from api.desktop_runtime import configure_bundled_tiktoken_cache
 
 
 def _open_log():
@@ -46,6 +49,11 @@ _log("daemon bootstrap started")
 # Frozen desktop builds must not initialize development reload/watch hooks.
 os.environ.setdefault("NODE_ENV", "production")
 _configure_git()
+tiktoken_cache = configure_bundled_tiktoken_cache()
+if tiktoken_cache:
+    _log(f"using bundled tiktoken cache: {tiktoken_cache}")
+elif getattr(sys, "frozen", False):
+    _log("bundled tiktoken cache missing")
 
 try:
     from api.desktop_settings import apply_desktop_settings
