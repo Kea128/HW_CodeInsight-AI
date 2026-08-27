@@ -160,6 +160,7 @@ async def health():
         "status": "healthy",
         "timestamp": datetime.now(UTC).isoformat(),
         "service": "codeinsight-engine",
+        "engine_version": os.environ.get("CODEINSIGHT_DESKTOP_VERSION", "development"),
     }
 
 

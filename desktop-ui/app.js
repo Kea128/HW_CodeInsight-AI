@@ -23,6 +23,8 @@ let engineProbeGeneration = 0;
 let engineLastError = "";
 let engineSidecarState = "unknown";
 let engineLogPath = "";
+let desktopAppVersion = "";
+let engineVersion = "";
 let refreshPromise = null;
 let refreshQueued = false;
 let drawerReturnFocus = null;
@@ -166,8 +168,21 @@ async function waitForEngine() {
   setEngineState("starting");
   while (performance.now() - startedAt < 90000 && generation === engineProbeGeneration) {
     try {
-      await api("/health", { timeout: 4000 });
+      const health = await api("/health", { timeout: 4000 });
       if (generation !== engineProbeGeneration) return;
+      engineVersion = health.engine_version || "";
+      if (
+        desktopAppVersion
+        && engineVersion
+        && engineVersion !== "development"
+        && engineVersion !== desktopAppVersion
+      ) {
+        setEngineState(
+          "failed",
+          `桌面版本 ${desktopAppVersion} 与分析引擎版本 ${engineVersion} 不一致，请完全退出后重新启动应用。`,
+        );
+        return;
+      }
       setEngineState("ready");
       await Promise.allSettled([
         loadTasks(),
@@ -1127,6 +1142,7 @@ async function initializeEngineDiagnostics() {
   const listen = window.__TAURI__?.event?.listen;
   if (invoke) {
     engineLogPath = await invoke("daemon_log_path").catch(() => "");
+    desktopAppVersion = await invoke("desktop_app_version").catch(() => "");
   }
   if (listen) {
     await listen("engine-sidecar", (event) => {
@@ -1168,6 +1184,8 @@ document.querySelector("#copy-engine-diagnostics-button").addEventListener("clic
     `engineState=${engineState}`,
     `sidecarState=${engineSidecarState}`,
     `apiBase=${apiBase}`,
+    `desktopVersion=${desktopAppVersion || "unknown"}`,
+    `engineVersion=${engineVersion || "unknown"}`,
     `logPath=${engineLogPath || "unknown"}`,
     `lastError=${engineLastError || "none"}`,
     `userAgent=${navigator.userAgent}`,
@@ -1237,7 +1255,6 @@ document.querySelector("#ollama-tier").value =
   localStorage.getItem("codeinsight-ollama-tier") || "auto";
 updateModelForm();
 initializeUpdateProgress();
-initializeEngineDiagnostics();
-waitForEngine();
+initializeEngineDiagnostics().finally(waitForEngine);
 setInterval(refreshWorkspace, 4000);
 setInterval(loadOllamaStatus, 2000);

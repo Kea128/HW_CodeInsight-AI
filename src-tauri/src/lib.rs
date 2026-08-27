@@ -182,10 +182,15 @@ fn stop_daemon(app: &tauri::AppHandle) {
 
 fn spawn_daemon(app: &tauri::AppHandle, desktop_token: &str) -> Result<CommandChild, String> {
     emit_engine_event(app, "starting", None, None);
+    let desktop_version = app.package_info().version.to_string();
     let (mut events, child) = app
         .shell()
         .sidecar("codeinsight-daemon")
-        .map(|command| command.env("CODEINSIGHT_DESKTOP_TOKEN", desktop_token))
+        .map(|command| {
+            command
+                .env("CODEINSIGHT_DESKTOP_TOKEN", desktop_token)
+                .env("CODEINSIGHT_DESKTOP_VERSION", desktop_version)
+        })
         .and_then(|command| command.spawn())
         .map_err(|error| describe_error("分析服务启动失败", error))?;
     emit_engine_event(app, "started", None, None);
@@ -772,6 +777,11 @@ fn desktop_session_token(token: tauri::State<DesktopSessionToken>) -> String {
     token.0.clone()
 }
 
+#[tauri::command]
+fn desktop_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -786,7 +796,8 @@ pub fn run() {
             daemon_log_path,
             open_daemon_log_directory,
             restart_app,
-            desktop_session_token
+            desktop_session_token,
+            desktop_app_version
         ])
         .setup(|app| {
             app.manage(PendingUpdate(Mutex::new(None)));

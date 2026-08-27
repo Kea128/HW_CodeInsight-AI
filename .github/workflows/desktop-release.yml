@@ -98,6 +98,10 @@ jobs:
         shell: pwsh
         run: |
           $env:CODEINSIGHT_DESKTOP_TOKEN = "desktop-ci-token"
+          $env:CODEINSIGHT_DESKTOP_VERSION = (Get-Content package.json | ConvertFrom-Json).version
+          $env:HTTP_PROXY = "http://127.0.0.1:9"
+          $env:HTTPS_PROXY = "http://127.0.0.1:9"
+          $env:NO_PROXY = "127.0.0.1,localhost"
           $daemon = Resolve-Path "src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe"
           $process = Start-Process -FilePath $daemon -PassThru
           try {
@@ -121,8 +125,12 @@ jobs:
               "X-CodeInsight-Token" = "desktop-ci-token"
             } -TimeoutSec 5 | Out-Null
             $daemonLog = Join-Path $env:LOCALAPPDATA "CodeInsight-AI/daemon.log"
-            if (-not (Test-Path $daemonLog) -or (Get-Content $daemonLog -Raw) -notmatch "using bundled tiktoken cache") {
+            $daemonLogContent = if (Test-Path $daemonLog) { Get-Content $daemonLog -Raw } else { "" }
+            if ($daemonLogContent -notmatch "using bundled tiktoken cache") {
               throw "Frozen daemon did not activate its bundled tiktoken cache"
+            }
+            if ($daemonLogContent -notmatch "desktop engine version: $env:CODEINSIGHT_DESKTOP_VERSION") {
+              throw "Frozen daemon did not report the packaged desktop version"
             }
           } finally {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue

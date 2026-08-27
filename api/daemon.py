@@ -3,7 +3,6 @@
 import faulthandler
 import os
 import shutil
-import sys
 import tempfile
 import traceback
 from datetime import datetime
@@ -45,15 +44,22 @@ def _configure_git() -> None:
 faulthandler.enable(file=_LOG)
 faulthandler.dump_traceback_later(60, file=_LOG)
 _log("daemon bootstrap started")
+_log(
+    "desktop engine version: "
+    f"{os.environ.get('CODEINSIGHT_DESKTOP_VERSION', 'unknown')}"
+)
 
 # Frozen desktop builds must not initialize development reload/watch hooks.
 os.environ.setdefault("NODE_ENV", "production")
 _configure_git()
-tiktoken_cache = configure_bundled_tiktoken_cache()
-if tiktoken_cache:
-    _log(f"using bundled tiktoken cache: {tiktoken_cache}")
-elif getattr(sys, "frozen", False):
-    _log("bundled tiktoken cache missing")
+try:
+    tiktoken_cache = configure_bundled_tiktoken_cache()
+    if tiktoken_cache:
+        _log(f"using bundled tiktoken cache: {tiktoken_cache}")
+except BaseException:
+    traceback.print_exc(file=_LOG)
+    _log("offline runtime resource validation failed")
+    raise
 
 try:
     from api.desktop_settings import apply_desktop_settings

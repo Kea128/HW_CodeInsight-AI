@@ -32,6 +32,7 @@ def test_production_api_fails_closed_without_configured_token(monkeypatch):
 def test_health_is_single_protected_readiness_route(monkeypatch):
     monkeypatch.setattr(main, "is_development", False)
     monkeypatch.setenv("CODEINSIGHT_DESKTOP_TOKEN", "desktop-secret")
+    monkeypatch.setenv("CODEINSIGHT_DESKTOP_VERSION", "9.8.7")
 
     health_routes = [
         route for route in main.app.routes if getattr(route, "path", None) == "/health"
@@ -45,6 +46,7 @@ def test_health_is_single_protected_readiness_route(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "healthy"
+    assert response.json()["engine_version"] == "9.8.7"
 
 
 @pytest.mark.parametrize(
