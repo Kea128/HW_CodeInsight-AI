@@ -77,9 +77,9 @@ def is_our_daemon_name(name: str) -> bool:
 
 def kill_known_daemon_images() -> None:
     """End leftover sidecar processes, but never the process that is starting."""
-    current = os.getpid()
+    protected = _protected_pids()
     for name, pid in list_windows_processes():
-        if pid != current and is_our_daemon_name(name):
+        if pid not in protected and is_our_daemon_name(name):
             kill_process_tree(pid)
 
 
@@ -108,7 +108,6 @@ def reclaim_listen_port(
 ) -> None:
     """Free the dedicated desktop port, including leftover 0.2.6/0.2.7 daemons."""
     listen_port = DEFAULT_PORT if port is None else port
-    kill_known_daemon_images()
     stale = _reclaim_candidates(listen_port)
     if stale:
         _emit(log, f"reclaiming leftover analysis daemon on {host}:{listen_port} ({_format_pids(stale)})")
@@ -128,8 +127,16 @@ def reclaim_listen_port(
     )
 
 
+def _protected_pids() -> set[int]:
+    pids = {os.getpid(), 0}
+    parent = os.getppid()
+    if parent > 0:
+        pids.add(parent)
+    return pids
+
+
 def kill_process_tree(pid: int) -> None:
-    if pid <= 0 or pid == os.getpid():
+    if pid in _protected_pids():
         return
     if os.name == "nt":
         _run(["taskkill", "/F", "/T", "/PID", str(pid)])
@@ -141,13 +148,13 @@ def kill_process_tree(pid: int) -> None:
 
 
 def _reclaim_candidates(port: int) -> set[int]:
-    current = os.getpid()
+    protected = _protected_pids()
     pids: set[int] = set()
     recorded = read_pid_file()
-    if recorded and recorded != current and _process_exists(recorded):
+    if recorded and recorded not in protected and _process_exists(recorded):
         pids.add(recorded)
     for pid in _listener_pids(port):
-        if pid not in {0, current}:
+        if pid not in protected:
             pids.add(pid)
     return pids
 

@@ -123,6 +123,8 @@ jobs:
               } catch {}
             }
             if (-not $ready) {
+              $daemonLog = Join-Path $env:LOCALAPPDATA "CodeInsight-AI/daemon.log"
+              if (Test-Path $daemonLog) { Get-Content $daemonLog -Tail 80 | Write-Output }
               throw "Frozen daemon did not become healthy within 60 seconds"
             }
             Invoke-RestMethod -Uri "http://127.0.0.1:8001/remote/projects" -Headers @{

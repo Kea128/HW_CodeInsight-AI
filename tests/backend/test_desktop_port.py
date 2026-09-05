@@ -54,6 +54,7 @@ def test_kill_known_daemon_images_skips_current_process(monkeypatch):
         "list_windows_processes",
         lambda: [
             ("codeinsight-daemon.exe", current),
+            ("codeinsight-daemon.exe", os.getppid()),
             ("codeinsight-daemon-x86_64-pc-windows-msvc.exe", 4242),
             ("chrome.exe", 7),
         ],
