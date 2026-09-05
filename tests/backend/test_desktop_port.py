@@ -33,6 +33,38 @@ def test_pid_file_roundtrip(tmp_path, monkeypatch):
     assert desktop_port.read_pid_file() is None
 
 
+def test_parse_tasklist_csv_reads_name_and_pid():
+    rows = list(
+        desktop_port.parse_tasklist_csv(
+            '"codeinsight-daemon-x86_64-pc-windows-msvc.exe","4321","RDP-Tcp#0","2","80 K"\n'
+            '"chrome.exe","99","Console","1","1 K"\n'
+        )
+    )
+    assert rows == [
+        ("codeinsight-daemon-x86_64-pc-windows-msvc.exe", 4321),
+        ("chrome.exe", 99),
+    ]
+
+
+def test_kill_known_daemon_images_skips_current_process(monkeypatch):
+    current = os.getpid()
+    killed: list[int] = []
+    monkeypatch.setattr(
+        desktop_port,
+        "list_windows_processes",
+        lambda: [
+            ("codeinsight-daemon.exe", current),
+            ("codeinsight-daemon-x86_64-pc-windows-msvc.exe", 4242),
+            ("chrome.exe", 7),
+        ],
+    )
+    monkeypatch.setattr(desktop_port, "kill_process_tree", killed.append)
+
+    desktop_port.kill_known_daemon_images()
+
+    assert killed == [4242]
+
+
 def test_is_our_daemon_name():
     assert desktop_port.is_our_daemon_name(
         "codeinsight-daemon-x86_64-pc-windows-msvc.exe"

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 import socket
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 DEFAULT_HOST = "127.0.0.1"
@@ -74,14 +76,27 @@ def is_our_daemon_name(name: str) -> bool:
 
 
 def kill_known_daemon_images() -> None:
-    """End leftover sidecar processes even when they no longer hold a PID file."""
+    """End leftover sidecar processes, but never the process that is starting."""
+    current = os.getpid()
+    for name, pid in list_windows_processes():
+        if pid != current and is_our_daemon_name(name):
+            kill_process_tree(pid)
+
+
+def list_windows_processes() -> Iterator[tuple[str, int]]:
     if os.name != "nt":
         return
-    for image in (
-        "codeinsight-daemon-x86_64-pc-windows-msvc.exe",
-        "codeinsight-daemon.exe",
-    ):
-        _run(["taskkill", "/F", "/T", "/IM", image])
+    completed = _run(["tasklist", "/FO", "CSV", "/NH"])
+    if completed.returncode != 0:
+        return
+    yield from parse_tasklist_csv(completed.stdout)
+
+
+def parse_tasklist_csv(output: str) -> Iterator[tuple[str, int]]:
+    for row in csv.reader(io.StringIO(output)):
+        if len(row) < 2 or not row[1].isdigit():
+            continue
+        yield row[0], int(row[1])
 
 
 def reclaim_listen_port(
