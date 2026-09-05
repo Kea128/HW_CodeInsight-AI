@@ -73,6 +73,17 @@ def is_our_daemon_name(name: str) -> bool:
     return any(marker in lowered for marker in _DAEMON_NAME_MARKERS)
 
 
+def kill_known_daemon_images() -> None:
+    """End leftover sidecar processes even when they no longer hold a PID file."""
+    if os.name != "nt":
+        return
+    for image in (
+        "codeinsight-daemon-x86_64-pc-windows-msvc.exe",
+        "codeinsight-daemon.exe",
+    ):
+        _run(["taskkill", "/F", "/T", "/IM", image])
+
+
 def reclaim_listen_port(
     host: str = DEFAULT_HOST,
     port: int | None = None,
@@ -80,8 +91,9 @@ def reclaim_listen_port(
     log: LogFn | None = None,
     timeout: float = 8.0,
 ) -> None:
-    """Free the desktop port if a leftover CodeInsight daemon still holds it."""
+    """Free the dedicated desktop port, including leftover 0.2.6/0.2.7 daemons."""
     listen_port = DEFAULT_PORT if port is None else port
+    kill_known_daemon_images()
     stale = _reclaim_candidates(listen_port)
     if stale:
         _emit(log, f"reclaiming leftover analysis daemon on {host}:{listen_port} ({_format_pids(stale)})")
@@ -120,9 +132,7 @@ def _reclaim_candidates(port: int) -> set[int]:
     if recorded and recorded != current and _process_exists(recorded):
         pids.add(recorded)
     for pid in _listener_pids(port):
-        if pid in {0, current}:
-            continue
-        if is_our_daemon_name(_process_name(pid)):
+        if pid not in {0, current}:
             pids.add(pid)
     return pids
 

@@ -73,7 +73,7 @@ def test_reclaim_kills_process_recorded_in_pid_file(tmp_path, monkeypatch):
             holder.wait(timeout=5)
 
 
-def test_reclaim_leaves_foreign_listener_alone(tmp_path, monkeypatch):
+def test_reclaim_does_not_kill_current_process_listener(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("127.0.0.1", 0))
@@ -85,3 +85,31 @@ def test_reclaim_leaves_foreign_listener_alone(tmp_path, monkeypatch):
         assert desktop_port.port_is_open("127.0.0.1", port)
     finally:
         server.close()
+
+
+def test_reclaim_kills_unnamed_listener_without_pid_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import socket,time;"
+                "s=socket.socket();s.bind(('127.0.0.1',0));s.listen(1);"
+                "print(s.getsockname()[1], flush=True);time.sleep(30)"
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        port = int(holder.stdout.readline().strip())
+        assert desktop_port.port_is_open("127.0.0.1", port)
+        desktop_port.reclaim_listen_port("127.0.0.1", port, timeout=5)
+        assert not desktop_port.port_is_open("127.0.0.1", port)
+        holder.wait(timeout=5)
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=5)

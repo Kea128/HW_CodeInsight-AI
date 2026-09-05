@@ -172,6 +172,60 @@ fn emit_update_progress(
     );
 }
 
+fn parse_netstat_listener_pids(output: &str, port: u16) -> Vec<u32> {
+    let expected = port.to_string();
+    let mut pids = Vec::new();
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 || !parts[0].eq_ignore_ascii_case("TCP") {
+            continue;
+        }
+        if !parts[3].eq_ignore_ascii_case("LISTENING") {
+            continue;
+        }
+        let Some((_, local_port)) = parts[1].rsplit_once(':') else {
+            continue;
+        };
+        if local_port != expected {
+            continue;
+        }
+        if let Ok(pid) = parts[4].parse::<u32>() {
+            if pid > 0 {
+                pids.push(pid);
+            }
+        }
+    }
+    pids
+}
+
+fn reclaim_stale_daemons() {
+    #[cfg(target_os = "windows")]
+    {
+        for image in [
+            "codeinsight-daemon-x86_64-pc-windows-msvc.exe",
+            "codeinsight-daemon.exe",
+        ] {
+            let mut command = Command::new("taskkill");
+            command.args(["/F", "/T", "/IM", image]);
+            command.creation_flags(0x08000000);
+            let _ = command.status();
+        }
+        let mut netstat = Command::new("netstat");
+        netstat.args(["-ano", "-p", "tcp"]);
+        netstat.creation_flags(0x08000000);
+        if let Ok(output) = netstat.output() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for pid in parse_netstat_listener_pids(&text, 8001) {
+                let mut command = Command::new("taskkill");
+                command.args(["/F", "/T", "/PID", &pid.to_string()]);
+                command.creation_flags(0x08000000);
+                let _ = command.status();
+            }
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
 fn kill_sidecar_tree(child: CommandChild) {
     let pid = child.pid();
     let _ = child.kill();
@@ -193,6 +247,7 @@ fn stop_daemon(app: &tauri::AppHandle) {
 }
 
 fn spawn_daemon(app: &tauri::AppHandle, desktop_token: &str) -> Result<CommandChild, String> {
+    reclaim_stale_daemons();
     emit_engine_event(app, "starting", None, None);
     let desktop_version = app.package_info().version.to_string();
     let (mut events, child) = app
@@ -853,6 +908,15 @@ mod tests {
             parse_github_download_error("ERROR TIMEOUT\n").localized_summary(),
             "GitHub 更新检查超时，请检查网络后重试"
         );
+    }
+
+    #[test]
+    fn netstat_listener_pids_match_exact_port() {
+        let output = concat!(
+            "  TCP    127.0.0.1:8001    0.0.0.0:0    LISTENING    4321\r\n",
+            "  TCP    127.0.0.1:18001   0.0.0.0:0    LISTENING    99\r\n",
+        );
+        assert_eq!(parse_netstat_listener_pids(output, 8001), vec![4321]);
     }
 
     #[test]
