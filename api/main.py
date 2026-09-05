@@ -12,12 +12,17 @@ from fastapi.responses import JSONResponse
 # Load environment variables from .env file
 load_dotenv()
 
+from api.desktop_runtime import configure_runtime
+
+configure_runtime()
+
 from api.logger import get_logger, setup_logging
 from api.routers import (
     auth,
     chat,
     codemap,
     continuous,
+    knowledge,
     remote,
     repo,
     system,
@@ -114,6 +119,7 @@ for module in (
     terminal,
     wiki,
     chat,
+    knowledge,
     codemap,
 ):
     app.include_router(module.router)

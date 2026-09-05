@@ -1,17 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#173b68"/>
-      <stop offset="1" stop-color="#08111f"/>
+      <stop offset="0" stop-color="#102a4a"/>
+      <stop offset="1" stop-color="#0b1626"/>
     </linearGradient>
-    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#78e7ff"/>
-      <stop offset="1" stop-color="#5a8cff"/>
+    <linearGradient id="mark" x1="0" y1="0" x2="0.2" y2="1">
+      <stop offset="0" stop-color="#7ee6ff"/>
+      <stop offset="1" stop-color="#4aa3ff"/>
     </linearGradient>
+    <radialGradient id="glow" cx="0.58" cy="0.48" r="0.34">
+      <stop offset="0" stop-color="#8eeeff" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#8eeeff" stop-opacity="0"/>
+    </radialGradient>
   </defs>
   <rect width="1024" height="1024" rx="220" fill="url(#background)"/>
-  <path d="M340 298 128 512l212 214 74-76-137-138 137-138z" fill="url(#mark)"/>
-  <path d="m684 298-74 76 137 138-137 138 74 76 212-214z" fill="url(#mark)"/>
-  <path d="m580 220-174 584h112l174-584z" fill="#eef8ff"/>
-  <circle cx="512" cy="512" r="404" fill="none" stroke="#8eeaff" stroke-opacity=".22" stroke-width="22"/>
+  <circle cx="596" cy="512" r="250" fill="url(#glow)"/>
+  <path d="M318 250 132 512l186 262 118-86-124-176 124-176z" fill="url(#mark)"/>
+  <circle cx="596" cy="512" r="176" fill="none" stroke="url(#mark)" stroke-width="56"/>
+  <circle cx="596" cy="512" r="72" fill="#e8f7ff"/>
 </svg>

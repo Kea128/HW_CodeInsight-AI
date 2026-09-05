@@ -9,6 +9,12 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     script = (ROOT / "desktop-ui" / "app.js").read_text(encoding="utf-8")
 
     assert 'id="connect-ubuntu-button"' in html
+    assert 'value="openai_compatible"' in html
+    assert 'id="model-base-url"' in html
+    assert 'id="knowledge-space-list"' in html
+    assert 'id="ask-form"' in html
+    assert "/knowledge/spaces" in script
+    assert "/desktop/models/discover" in script
     assert 'id="remote-host"' in html
     assert 'id="source-remote-tab" type="button"' in html
     assert 'document.querySelector("#connect-ubuntu-button")' in script

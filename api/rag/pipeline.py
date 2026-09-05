@@ -160,15 +160,16 @@ def read_all_documents(
     return documents
 
 
-def get_repo_db(repo: Repo) -> str:
+def get_repo_db(repo: Repo, space_id: str | None = None) -> str:
     if not repo.root_path:
         raise ValueError(f"Repo root path is empty: {repo}")
-    save_db_file = os.path.join(repo.root_path, "databases", f"{repo.name}.pkl")
+    name = space_id or repo.name
+    save_db_file = os.path.join(repo.root_path, "databases", f"{name}.pkl")
     return save_db_file
 
 
-def repo_index_exist(repo: Repo) -> bool:
-    return os.path.exists(get_repo_db(repo))
+def repo_index_exist(repo: Repo, space_id: str | None = None) -> bool:
+    return os.path.exists(get_repo_db(repo, space_id=space_id))
 
 
 class LineTrackingTextSplitter(TextSplitter):
@@ -296,6 +297,7 @@ class DatabaseManager:
         excluded_files: List[str] = None,
         included_dirs: List[str] = None,
         included_files: List[str] = None,
+        space_id: str | None = None,
     ) -> List[Document]:
         """
         Create a new database from the repository.
@@ -321,7 +323,9 @@ class DatabaseManager:
             embedder_type = "ollama" if is_ollama_embedder else None
 
         self.reset_database()
-        self._create_repo(repo_url_or_path, repo_type, access_token)
+        self._create_repo(
+            repo_url_or_path, repo_type, access_token, space_id=space_id
+        )
         return self.prepare_db_index(
             embedder_type=embedder_type,
             excluded_dirs=excluded_dirs,
@@ -339,7 +343,11 @@ class DatabaseManager:
         self.repo_paths = None
 
     def _create_repo(
-        self, repo_url_or_path: str, repo_type: str = None, access_token: str = None
+        self,
+        repo_url_or_path: str,
+        repo_type: str = None,
+        access_token: str = None,
+        space_id: str | None = None,
     ) -> None:
         """
         Download and prepare all paths.
@@ -370,7 +378,7 @@ class DatabaseManager:
                     f"Repository already exists at {repo.save_path}. Using existing repository."
                 )
 
-            save_db_file = get_repo_db(repo)
+            save_db_file = get_repo_db(repo, space_id=space_id)
             os.makedirs(os.path.dirname(save_db_file), exist_ok=True)
 
             self.repo_paths = {

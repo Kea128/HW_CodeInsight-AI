@@ -10,15 +10,17 @@
   <body>
     <header class="app-header">
       <div class="brand">
-        <span class="brand-mark">CI</span>
+        <img class="brand-mark" src="./icon.svg" alt="" width="36" height="36" />
         <div>
-          <p class="eyebrow">LOCAL-FIRST CODE INTELLIGENCE</p>
           <h1>CodeInsight-AI</h1>
+          <p class="brand-tagline">本地代码智能</p>
         </div>
       </div>
-      <nav class="header-actions" aria-label="主要操作">
+      <div class="status-cluster" aria-label="运行状态">
         <span id="engine-status" class="badge waiting">引擎启动中</span>
         <span id="model-status" class="badge waiting">AI 未检查</span>
+      </div>
+      <nav class="header-actions" aria-label="主要操作">
         <button id="add-project-button">添加项目</button>
         <button id="connect-ubuntu-button" class="secondary">连接 Ubuntu</button>
         <button id="settings-button" class="secondary">设置</button>
@@ -33,7 +35,6 @@
     <main>
       <section id="engine-recovery" class="engine-recovery panel" hidden>
         <div>
-          <p class="eyebrow">ENGINE DIAGNOSTICS</p>
           <h2 id="engine-recovery-title">分析引擎正在启动</h2>
           <p id="engine-recovery-message" class="message">首次启动可能需要一些时间。</p>
         </div>
@@ -46,7 +47,6 @@
 
       <section id="setup-banner" class="setup-banner">
         <div>
-          <p class="eyebrow">首次使用</p>
           <h2>先准备 AI，再开始理解代码</h2>
           <p>推荐使用本机 Ollama。软件会根据内存自动选择合适的 Qwen 模型，代码无需离开电脑。</p>
         </div>
@@ -60,59 +60,69 @@
 
       <section class="workspace-overview" aria-label="工作区">
         <div class="section-heading">
-          <div>
-            <p class="eyebrow">WORKSPACE</p>
-            <h2>项目工作区</h2>
-          </div>
+          <h2>工作区</h2>
           <button id="refresh-button" class="secondary" type="button">刷新全部</button>
         </div>
         <div id="refresh-error" class="error-card" role="alert" hidden></div>
-        <div class="work-areas">
-          <section class="workspace panel" aria-labelledby="projects-heading">
+        <div class="workbench">
+          <section class="workbench-col panel" aria-labelledby="projects-heading">
             <div class="section-heading compact">
-              <div>
-                <p class="eyebrow">PROJECTS</p>
-                <h2 id="projects-heading">持续项目</h2>
-              </div>
+              <h2 id="projects-heading">项目来源</h2>
               <button id="projects-add-button" class="ghost" type="button">添加</button>
             </div>
-            <div class="workspace-group">
-              <h3>本地项目</h3>
-              <div id="continuous-project-list" class="project-list" aria-live="polite">
-                <p class="empty">正在读取项目…</p>
-              </div>
+            <div class="segmented" id="workspace-source-tabs" role="tablist" aria-label="项目来源">
+              <button id="workspace-local-tab" type="button" role="tab" aria-selected="true" tabindex="0" data-workspace-source="local" class="active">本地</button>
+              <button id="workspace-remote-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-workspace-source="remote">Ubuntu</button>
             </div>
-            <div class="workspace-group">
-              <h3>Ubuntu 项目</h3>
-              <div id="remote-project-list" class="remote-project-list" aria-live="polite">
-                <p class="empty">尚未连接 Ubuntu 项目。</p>
+            <div class="list-scroll">
+              <div id="continuous-project-list" class="project-list" aria-live="polite">
+                <div class="empty-state">
+                  <p class="empty">正在读取项目…</p>
+                </div>
+              </div>
+              <div id="remote-project-list" class="remote-project-list" aria-live="polite" hidden>
+                <div class="empty-state">
+                  <p class="empty">尚未连接 Ubuntu 项目。</p>
+                </div>
               </div>
             </div>
           </section>
-          <section class="workspace panel tasks-workspace" aria-labelledby="tasks-heading">
+
+          <section class="workbench-col panel" aria-labelledby="knowledge-heading">
             <div class="section-heading compact">
-              <div>
-                <p class="eyebrow">TASKS</p>
-                <h2 id="tasks-heading">分析任务</h2>
+              <h2 id="knowledge-heading">知识库</h2>
+            </div>
+            <select id="active-space" aria-label="当前知识库"></select>
+            <div id="knowledge-space-list" class="project-list list-scroll" aria-live="polite">
+              <div class="empty-state">
+                <p class="empty">添加项目后会按子仓分类知识库。</p>
+                <p class="hint">每个工作目录或子仓对应一个可切换的知识空间。</p>
               </div>
+            </div>
+          </section>
+
+          <section class="workbench-col panel tasks-workspace" aria-labelledby="tasks-heading">
+            <div class="section-heading compact">
+              <h2 id="tasks-heading">分析任务</h2>
               <div class="segmented" id="task-filters" role="tablist" aria-label="任务筛选">
                 <button type="button" role="tab" aria-selected="true" tabindex="0" data-filter="all" class="active">全部</button>
                 <button type="button" role="tab" aria-selected="false" tabindex="-1" data-filter="active">运行中</button>
                 <button type="button" role="tab" aria-selected="false" tabindex="-1" data-filter="completed">已完成</button>
               </div>
             </div>
-            <div id="task-list" class="task-list" aria-live="polite">
-              <p class="empty">正在读取任务…</p>
+            <div id="task-list" class="task-list list-scroll" aria-live="polite">
+              <div class="empty-state">
+                <p class="empty">正在读取任务…</p>
+              </div>
             </div>
           </section>
         </div>
       </section>
 
-      <section class="terminal-placeholder panel" aria-labelledby="terminal-workspace-heading">
+      <section id="terminal-placeholder" class="terminal-placeholder panel" aria-labelledby="terminal-workspace-heading">
         <div>
-          <p class="eyebrow">TERMINAL</p>
-          <h2 id="terminal-workspace-heading">终端工作区</h2>
-          <p class="hint">从 Ubuntu 项目打开终端后，它会固定在窗口底部；拖动上边缘可调整高度。</p>
+          <h2 id="terminal-workspace-heading">终端</h2>
+          <p class="hint">连接 Ubuntu 项目后，终端会固定在窗口底部，可拖动上边缘调整高度。</p>
         </div>
         <button id="terminal-open-project-button" type="button" class="secondary">选择 Ubuntu 项目</button>
       </section>
@@ -135,7 +145,7 @@
 
     <aside id="project-drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="project-drawer-title" aria-hidden="true" tabindex="-1">
       <div class="drawer-header">
-        <div><p class="eyebrow">NEW SOURCE</p><h2 id="project-drawer-title">添加项目</h2></div>
+        <h2 id="project-drawer-title">添加项目</h2>
         <button class="drawer-close ghost" data-close-drawer type="button" aria-label="关闭添加项目对话框">关闭</button>
       </div>
       <div class="segmented drawer-tabs" role="tablist" aria-label="项目来源">
@@ -144,7 +154,16 @@
       </div>
       <div id="source-local-panel" role="tabpanel" aria-labelledby="source-local-tab">
         <form id="project-form">
-          <label>项目绝对路径<input id="project-path" required placeholder="D:\WorkSpace\my-project" /></label>
+          <label>工作目录绝对路径<input id="project-path" required placeholder="D:\WorkSpace\my-project" /></label>
+          <div class="settings-block" id="subdir-block">
+            <div class="row">
+              <p class="hint">可勾选子仓/子目录，每个范围生成独立知识库。</p>
+              <button id="detect-subdirs-button" type="button" class="secondary">扫描子目录</button>
+            </div>
+            <div id="subdir-list" class="subdir-list">
+              <p class="empty">输入路径后扫描，留空则分析整个工作目录。</p>
+            </div>
+          </div>
           <details>
             <summary>高级调度选项</summary>
             <div class="row">
@@ -189,24 +208,49 @@
 
     <aside id="settings-drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title" aria-hidden="true" tabindex="-1">
       <div class="drawer-header">
-        <div><p class="eyebrow">PREFERENCES</p><h2 id="settings-drawer-title">AI 与应用设置</h2></div>
+        <h2 id="settings-drawer-title">AI 与应用设置</h2>
         <button class="drawer-close ghost" data-close-drawer type="button" aria-label="关闭设置对话框">关闭</button>
       </div>
-      <form id="model-form">
+      <form id="model-form" class="settings-section">
+        <h3>模型服务</h3>
         <label>模型服务
           <select id="model-provider">
             <option value="ollama">本机 Ollama</option>
             <option value="openai">OpenAI</option>
             <option value="google">Google Gemini</option>
+            <option value="openai_compatible">自定义 OpenAI 兼容</option>
           </select>
         </label>
         <p id="provider-state" class="hint"></p>
+        <div id="compatible-fields">
+          <label>API 协议<input id="model-protocol" value="OpenAI Compatible" readonly /></label>
+          <label>API 地址<input id="model-base-url" placeholder="https://api.deepseek.com" autocomplete="off" /></label>
+          <label>模型
+            <select id="model-id">
+              <option value="">先获取模型列表</option>
+            </select>
+          </label>
+          <div class="row">
+            <button id="discover-models-button" type="button" class="secondary">获取模型列表</button>
+            <button id="test-model-button" type="button" class="secondary">测试连接</button>
+          </div>
+          <label>嵌入方式
+            <select id="embedder-mode">
+              <option value="auto">自动（优先同一地址）</option>
+              <option value="openai">OpenAI 兼容嵌入</option>
+              <option value="ollama">本机 Ollama</option>
+              <option value="google">Google</option>
+              <option value="none">不使用向量</option>
+            </select>
+          </label>
+          <label>页并发生成数<input id="wiki-page-concurrency" type="number" min="1" max="8" value="4" /></label>
+        </div>
         <label id="api-key-label">API Key<input id="model-api-key" type="password" autocomplete="off" placeholder="输入后保存在本机" /></label>
         <button type="submit">保存并重启引擎</button>
       </form>
       <p id="model-message" class="message"></p>
       <button id="deferred-restart-button" type="button" class="secondary" hidden>保存完成，立即重启</button>
-      <div class="settings-block">
+      <div class="settings-block settings-section">
         <h3>本地模型质量</h3>
         <p class="hint">自动模式会根据电脑内存选择 1.7B、4B 或 8B 模型。</p>
         <label>质量档位
@@ -220,7 +264,7 @@
         <p id="ollama-tier-hint" class="hint"></p>
         <button id="settings-install-ollama-button" type="button" class="secondary">安装或升级本地模型</button>
       </div>
-      <div class="settings-block">
+      <div class="settings-block settings-section">
         <h3>应用更新</h3>
         <p class="hint">检查并安装 CodeInsight-AI 桌面更新。</p>
         <button id="update-button" type="button" class="secondary">检查更新</button>
@@ -229,11 +273,24 @@
 
     <aside id="result-panel" class="drawer result-drawer" role="dialog" aria-modal="true" aria-labelledby="result-title" aria-hidden="true" tabindex="-1">
       <div class="drawer-header">
-        <div><p class="eyebrow">ANALYSIS</p><h2 id="result-title">分析结果</h2></div>
+        <h2 id="result-title">分析结果</h2>
         <button id="close-result-button" class="drawer-close ghost" type="button" aria-label="关闭分析详情">关闭</button>
+      </div>
+      <div class="segmented" id="result-tabs" role="tablist" aria-label="结果视图">
+        <button type="button" role="tab" data-result-tab="docs" class="active" aria-selected="true">文档</button>
+        <button type="button" role="tab" data-result-tab="ask" aria-selected="false">问答</button>
       </div>
       <p id="result-message" class="message"></p>
       <div id="result-pages" class="result-pages"></div>
+      <div id="ask-panel" hidden>
+        <div id="ask-messages" class="ask-messages"></div>
+        <form id="ask-form" class="ask-composer">
+          <label>在当前知识库提问
+            <textarea id="ask-input" rows="3" placeholder="例如：认证流程在哪里实现？"></textarea>
+          </label>
+          <button type="submit">发送</button>
+        </form>
+      </div>
     </aside>
 
     <script src="./app.js"></script>

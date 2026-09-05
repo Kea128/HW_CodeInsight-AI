@@ -40,6 +40,40 @@ def test_desktop_settings_persist_and_apply(monkeypatch, tmp_path):
     assert os.environ["DEEPWIKI_EMBEDDER_TYPE"] == "openai"
 
 
+def test_openai_compatible_settings_apply_base_url_and_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    values = {}
+    monkeypatch.setattr(
+        desktop_settings.keyring,
+        "set_password",
+        lambda service, provider, value: values.__setitem__((service, provider), value),
+    )
+    monkeypatch.setattr(
+        desktop_settings.keyring,
+        "get_password",
+        lambda service, provider: values.get((service, provider)),
+    )
+
+    saved = save_desktop_settings(
+        "openai_compatible",
+        "sk-test",
+        base_url="https://api.deepseek.com",
+        selected_model="deepseek-chat",
+        embedder_mode="auto",
+        wiki_page_concurrency=4,
+    )
+    applied = apply_desktop_settings()
+
+    assert saved["provider"] == "openai_compatible"
+    assert applied["openai_compatible_api_key"] == "__keyring__"
+    assert os.environ["OPENAI_API_KEY"] == "sk-test"
+    assert os.environ["OPENAI_BASE_URL"] == "https://api.deepseek.com"
+    assert os.environ["CODEINSIGHT_DESKTOP_MODEL"] == "deepseek-chat"
+    assert os.environ["DEEPWIKI_WIKI_PAGE_CONCURRENCY"] == "4"
+
+
 def test_plaintext_key_is_migrated_and_removed(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     path = tmp_path / "CodeInsight-AI" / "settings.json"

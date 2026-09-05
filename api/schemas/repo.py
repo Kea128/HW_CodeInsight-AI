@@ -35,6 +35,8 @@ class WikiTaskRequest(RepoRequestBase):
         Keep the legacy repository prefix for diagnostics and migration, while
         hashing model coordinates to keep IDs safe in URL path segments.
         """
+        if self.space_id:
+            return f"space_{self.space_id}"
         language = (
             re.sub(r"[^A-Za-z0-9.-]+", "-", self.language).strip("-") or "default"
         )
@@ -42,6 +44,10 @@ class WikiTaskRequest(RepoRequestBase):
             "utf-8"
         )
         model_digest = hashlib.sha256(model_identity).hexdigest()[:12]
+        scope = ",".join(sorted(self.included_dirs or []))
+        if scope:
+            scope_digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:8]
+            return f"{self.legacy_repo_key}_{language}_{model_digest}_{scope_digest}"
         return f"{self.legacy_repo_key}_{language}_{model_digest}"
 
 

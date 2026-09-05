@@ -53,6 +53,7 @@ async def prepare_repo_index(
         excluded_dirs=request.excluded_dirs,
         included_files=request.included_files,
         included_dirs=request.included_dirs,
+        space_id=request.space_id,
     )
     return rag
 
@@ -73,7 +74,7 @@ async def research_chat(
                 input_too_large = True
 
     repo = Repo(repo_url=request.repo_url, repo_type=request.type)
-    if not repo_index_exist(repo=repo):
+    if not repo_index_exist(repo=repo, space_id=request.space_id):
         logger.warning(
             "Repo %s is not indexed yet. Call `/repo/prepare` first if encounter Timeout",
             repo.name,

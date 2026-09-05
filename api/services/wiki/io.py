@@ -23,25 +23,54 @@ os.makedirs(WIKI_CACHE_DIR, exist_ok=True)
 WIKI_PREFIX = "deepwiki_cache_"
 
 
-def get_wiki_cache_path(owner: str, repo: str, repo_type: str, language: str) -> str:
+def get_wiki_cache_path(
+    owner: str,
+    repo: str,
+    repo_type: str,
+    language: str,
+    space_id: str | None = None,
+) -> str:
     """Generates the file path for a given wiki cache."""
-    filename = f"{WIKI_PREFIX}{repo_type}_{owner}_{repo}_{language}.json"
+    if space_id:
+        filename = f"{WIKI_PREFIX}space_{space_id}.json"
+    else:
+        filename = f"{WIKI_PREFIX}{repo_type}_{owner}_{repo}_{language}.json"
     return os.path.join(WIKI_CACHE_DIR, filename)
 
 
-def wiki_cache_exists(owner: str, repo: str, repo_type: str, language: str) -> bool:
+def wiki_cache_exists(
+    owner: str,
+    repo: str,
+    repo_type: str,
+    language: str,
+    space_id: str | None = None,
+) -> bool:
     return os.path.exists(
-        get_wiki_cache_path(owner, repo=repo, repo_type=repo_type, language=language)
+        get_wiki_cache_path(
+            owner,
+            repo=repo,
+            repo_type=repo_type,
+            language=language,
+            space_id=space_id,
+        )
     )
 
 
 async def read_wiki_cache(
-    owner: str, repo: str, repo_type: str, language: str
+    owner: str,
+    repo: str,
+    repo_type: str,
+    language: str,
+    space_id: str | None = None,
 ) -> WikiCacheData | None:
     """Reads wiki cache data from the file system."""
-    if not wiki_cache_exists(owner, repo, repo_type, language):
+    if not wiki_cache_exists(
+        owner, repo, repo_type, language, space_id=space_id
+    ):
         return None
-    cache_path = get_wiki_cache_path(owner, repo, repo_type, language)
+    cache_path = get_wiki_cache_path(
+        owner, repo, repo_type, language, space_id=space_id
+    )
     try:
         return await aload(WikiCacheData, cache_path, encoding="utf-8")
     except Exception:
@@ -50,7 +79,12 @@ async def read_wiki_cache(
 
 
 async def save_wiki_cache(
-    owner: str, repo: str, repo_type: str, language: str, wiki_cache: WikiCacheData
+    owner: str,
+    repo: str,
+    repo_type: str,
+    language: str,
+    wiki_cache: WikiCacheData,
+    space_id: str | None = None,
 ) -> bool:
     """Saves wiki cache data to the file system."""
     cache_path = get_wiki_cache_path(
@@ -58,6 +92,7 @@ async def save_wiki_cache(
         repo=repo,
         repo_type=repo_type,
         language=language,
+        space_id=space_id,
     )
     logger.info(f"Attempting to save wiki cache. Path: {cache_path}")
     try:
@@ -106,14 +141,17 @@ async def list_wiki_cache() -> list[WikiTaskSummary]:
             stats = await asyncio.to_thread(os.stat, file_path)
             cache = await aload(WikiCacheData, file_path, encoding="utf-8")
             page_count = len(cache.generated_pages)
-            repo_type, owner, *repo, language = (
-                os.path.splitext(filename)[0].removeprefix(WIKI_PREFIX).split("_")
-            )
+            stem = os.path.splitext(filename)[0].removeprefix(WIKI_PREFIX)
+            if stem.startswith("space_"):
+                repo_type, owner, repo, language = "local", "local", stem, "zh"
+            else:
+                repo_type, owner, *repo, language = stem.split("_")
+                repo = "_".join(repo)
             entries.append(
                 WikiTaskSummary(
                     id=filename,
                     owner=owner,
-                    repo="_".join(repo),
+                    repo=repo if isinstance(repo, str) else "_".join(repo),
                     repo_type=repo_type,
                     language=language,
                     submitted_at=int(stats.st_mtime * 1000),

@@ -197,7 +197,7 @@ def test_migration_from_v4_retains_terminal_tasks_and_events(tmp_path):
             )
         ]
     assert "pending_changes" in columns
-    assert versions == [4, 5, 6]
+    assert versions == [4, 5, 6, 7]
 
 
 def test_fresh_database_runs_every_migration(tmp_path):
@@ -212,7 +212,7 @@ def test_fresh_database_runs_every_migration(tmp_path):
             )
         ]
 
-    assert versions == [1, 2, 3, 4, 5, 6]
+    assert versions == [1, 2, 3, 4, 5, 6, 7]
 
 
 def test_terminal_event_retention_keeps_recent_history(tmp_path):

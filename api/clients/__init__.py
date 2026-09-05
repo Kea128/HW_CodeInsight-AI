@@ -2,6 +2,10 @@
 Any patches and additional clients could be applied or imported in this module.
 """
 
+from api.desktop_runtime import configure_runtime
+
+configure_runtime()
+
 from adalflow.components.model_client import (
     AzureAIClient,
     GoogleGenAIClient,

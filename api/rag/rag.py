@@ -252,6 +252,7 @@ class RAG(adal.Component):
         excluded_files: list[str] | None = None,
         included_dirs: list[str] | None = None,
         included_files: list[str] | None = None,
+        space_id: str | None = None,
     ):
         """
         Prepare the retriever for a repository.
@@ -276,6 +277,7 @@ class RAG(adal.Component):
             excluded_files=excluded_files,
             included_dirs=included_dirs,
             included_files=included_files,
+            space_id=space_id,
         )
         logger.info(f"Loaded {len(self.transformed_docs)} documents for retrieval")
 
@@ -332,6 +334,7 @@ class RAG(adal.Component):
         excluded_files: list[str] | None = None,
         included_dirs: list[str] | None = None,
         included_files: list[str] | None = None,
+        space_id: str | None = None,
     ):
         """Async version of the original `prepare_retriever`.
 
@@ -359,6 +362,7 @@ class RAG(adal.Component):
                 excluded_files=excluded_files,
                 included_dirs=included_dirs,
                 included_files=included_files,
+                space_id=space_id,
             )
 
     def call(

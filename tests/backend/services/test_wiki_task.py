@@ -48,6 +48,15 @@ async def test_ollama_task_uses_selected_desktop_model(monkeypatch):
     assert task.request.model == "qwen3:4b"
 
 
+async def test_openai_compatible_task_uses_desktop_model(monkeypatch):
+    monkeypatch.setattr(wt, "selected_desktop_model", lambda: "deepseek-chat")
+    monkeypatch.setenv("CODEINSIGHT_DESKTOP_MODEL", "deepseek-chat")
+
+    task = _req(provider="openai_compatible", model=None)
+
+    assert task.request.model == "deepseek-chat"
+
+
 async def _wait_active(reg: TaskRegistry, task_id: str) -> None:
     for _ in range(50):
         t = reg.get(task_id)
@@ -63,7 +72,7 @@ async def test_submit_creates_and_completes(monkeypatch):
     reg = TaskRegistry()
     monkeypatch.setattr(wt, "WIKI_TASK_TTL_SECONDS", 0)
     monkeypatch.setattr(wt, "wiki_cache_exists", lambda **p: False)
-    monkeypatch.setattr(wt, "repo_index_exist", lambda repo: True)  # skip indexing
+    monkeypatch.setattr(wt, "repo_index_exist", lambda repo, space_id=None: True)  # skip indexing
 
     structure = _structure(2)
     saved: dict = {}
@@ -154,7 +163,7 @@ async def test_submit_serves_cache(monkeypatch):
 # run_task() state machine
 # --------------------------------------------------------------------------- #
 async def test_page_failure_yields_placeholder_but_completes(monkeypatch):
-    monkeypatch.setattr(wt, "repo_index_exist", lambda repo: True)
+    monkeypatch.setattr(wt, "repo_index_exist", lambda repo, space_id=None: True)
     monkeypatch.setattr(wt, "WIKI_PAGE_RETRIES", 1)
 
     saved: dict = {}
@@ -180,7 +189,7 @@ async def test_page_failure_yields_placeholder_but_completes(monkeypatch):
 
 
 async def test_determine_structure_failure_fails_task(monkeypatch):
-    monkeypatch.setattr(wt, "repo_index_exist", lambda repo: True)
+    monkeypatch.setattr(wt, "repo_index_exist", lambda repo, space_id=None: True)
 
     async def boom(task):
         raise RuntimeError("no structure")
@@ -261,7 +270,7 @@ _STRUCT_XML = (
 
 async def test_run_task_end_to_end(monkeypatch):
     monkeypatch.setattr(wt, "WIKI_TASK_TTL_SECONDS", 0)
-    monkeypatch.setattr(wt, "repo_index_exist", lambda repo: True)
+    monkeypatch.setattr(wt, "repo_index_exist", lambda repo, space_id=None: True)
     monkeypatch.setattr(wt, "Repo", _FakeRepo)
     monkeypatch.setattr(wt, "detect_default_branch", lambda p: "main")
     monkeypatch.setattr(

@@ -178,6 +178,21 @@
         }
       }
     },
+    "openai_compatible": {
+      "client_class": "OpenAIClient",
+      "default_model": "deepseek-chat",
+      "supportsCustomModel": true,
+      "models": {
+        "deepseek-chat": {
+          "temperature": 0.7,
+          "top_p": 0.8
+        },
+        "deepseek-reasoner": {
+          "temperature": 0.7,
+          "top_p": 0.8
+        }
+      }
+    },
     "azure": {
       "client_class": "AzureAIClient",
       "default_model": "gpt-4o",

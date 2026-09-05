@@ -1,7 +1,8 @@
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.config import configs
 from api.desktop_settings import (
@@ -12,6 +13,11 @@ from api.desktop_settings import (
 )
 from api.logger import get_logger
 from api.schemas import Model, ModelConfig, Provider
+from api.services.model_discover import (
+    discover_openai_models,
+    resolve_api_key,
+    probe_openai_chat,
+)
 from api.services.ollama_installer import installer
 
 logger = get_logger(__name__)
@@ -20,8 +26,13 @@ router = APIRouter(tags=["system"])
 
 
 class DesktopSettingsRequest(BaseModel):
-    provider: Literal["openai", "google", "ollama"]
+    provider: Literal["openai", "google", "ollama", "openai_compatible"]
     api_key: str | None = None
+    base_url: str | None = None
+    selected_model: str | None = None
+    embedder_mode: str | None = None
+    wiki_page_concurrency: int | None = Field(None, ge=1, le=8)
+    max_concurrent_wiki_tasks: int | None = Field(None, ge=1, le=16)
 
 
 class DesktopSettingsStatus(BaseModel):
@@ -30,10 +41,22 @@ class DesktopSettingsStatus(BaseModel):
     restart_required: bool = False
     ollama_tier: str = "auto"
     ollama_model: str | None = None
+    base_url: str | None = None
+    selected_model: str | None = None
+    embedder_mode: str = "auto"
+    wiki_page_concurrency: int = 1
+    max_concurrent_wiki_tasks: int | None = None
     analysis_pending: bool = False
     model_error: str | None = None
     disk_error: str | None = None
     ollama_error: str | None = None
+
+
+class ModelEndpointRequest(BaseModel):
+    base_url: str
+    api_key: str | None = None
+    model: str | None = None
+    provider: Literal["openai_compatible"] = "openai_compatible"
 
 
 class OllamaInstallRequest(BaseModel):
@@ -49,6 +72,7 @@ def _desktop_settings_status(
         bool(ollama_status.get("ready"))
         if provider == "ollama"
         else bool(data.get(f"{provider}_api_key"))
+        and (provider != "openai_compatible" or bool(data.get("base_url")))
     )
     return DesktopSettingsStatus(
         provider=provider,
@@ -56,6 +80,15 @@ def _desktop_settings_status(
         restart_required=restart_required,
         ollama_tier=data.get("ollama_tier", "auto"),
         ollama_model=data.get("ollama_model"),
+        base_url=data.get("base_url"),
+        selected_model=data.get("selected_model"),
+        embedder_mode=data.get("embedder_mode", "auto"),
+        wiki_page_concurrency=int(data.get("wiki_page_concurrency") or 1),
+        max_concurrent_wiki_tasks=(
+            int(data["max_concurrent_wiki_tasks"])
+            if data.get("max_concurrent_wiki_tasks")
+            else None
+        ),
         analysis_pending=bool(ollama_status.get("analysis_pending", False)),
         model_error=ollama_status.get("model_error"),
         disk_error=ollama_status.get("disk_error"),
@@ -78,11 +111,48 @@ async def get_desktop_settings():
 @router.post("/desktop/settings", response_model=DesktopSettingsStatus)
 async def update_desktop_settings(request: DesktopSettingsRequest):
     try:
-        save_desktop_settings(request.provider, request.api_key)
+        save_desktop_settings(
+            request.provider,
+            request.api_key,
+            base_url=request.base_url,
+            selected_model=request.selected_model,
+            embedder_mode=request.embedder_mode,
+            wiki_page_concurrency=request.wiki_page_concurrency,
+            max_concurrent_wiki_tasks=request.max_concurrent_wiki_tasks,
+        )
         data = apply_desktop_settings()
         return _desktop_settings_status(data, restart_required=False)
     except CredentialStorageUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@router.post("/desktop/models/discover")
+async def discover_desktop_models(request: ModelEndpointRequest):
+    try:
+        api_key = resolve_api_key(request.provider, request.api_key)
+        models = await discover_openai_models(request.base_url, api_key)
+        return {"models": models}
+    except CredentialStorageUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail=f"无法获取模型列表：{error}") from error
+
+
+@router.post("/desktop/models/test")
+async def test_desktop_model(request: ModelEndpointRequest):
+    try:
+        api_key = resolve_api_key(request.provider, request.api_key)
+        return await probe_openai_chat(
+            request.base_url, api_key, request.model or ""
+        )
+    except CredentialStorageUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail=f"连接测试失败：{error}") from error
 
 
 @router.get("/desktop/ollama/status")

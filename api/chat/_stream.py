@@ -173,6 +173,19 @@ class _OpenAICompatStreamer(ChatStreamer):
                 yield chunk.choices[0].delta.content
 
 
+class OpenAICompatibleChatStreamer(_OpenAICompatStreamer):
+    provider = "openai_compatible"
+    error_hint = (
+        "Please check that you have set the OpenAI-compatible API address "
+        "and API key in desktop settings."
+    )
+
+    def _build_client(self):
+        from api.clients import OpenAIClient
+
+        return OpenAIClient()
+
+
 class OpenAIChatStreamer(_OpenAICompatStreamer):
     provider = "openai"
     error_hint = (

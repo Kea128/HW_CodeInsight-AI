@@ -8,7 +8,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from api.desktop_runtime import configure_bundled_tiktoken_cache
+from api.desktop_runtime import configure_runtime
 
 
 def _open_log():
@@ -53,9 +53,13 @@ _log(
 os.environ.setdefault("NODE_ENV", "production")
 _configure_git()
 try:
-    tiktoken_cache = configure_bundled_tiktoken_cache()
+    runtime = configure_runtime()
+    tiktoken_cache = runtime.get("tiktoken_cache")
     if tiktoken_cache:
         _log(f"using bundled tiktoken cache: {tiktoken_cache}")
+    ssl_bundle = runtime.get("ssl_bundle")
+    if ssl_bundle:
+        _log(f"using Windows CA bundle: {ssl_bundle}")
 except BaseException:
     traceback.print_exc(file=_LOG)
     _log("offline runtime resource validation failed")

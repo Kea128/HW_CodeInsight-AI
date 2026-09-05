@@ -8,6 +8,10 @@ let continuousProjectsLoading = false;
 let modelConfigured = false;
 let savedModelProvider = localStorage.getItem("codeinsight-model-provider") || "openai";
 let modelProvider = savedModelProvider;
+let savedModelId = localStorage.getItem("codeinsight-model-id") || "";
+let latestKnowledgeSpaces = [];
+let activeSpaceId = localStorage.getItem("codeinsight-active-space") || "";
+let resultTab = "docs";
 let ollamaRestarting = false;
 let ollamaStatusLoading = false;
 let ollamaReady = false;
@@ -73,6 +77,7 @@ function setEngineState(state, detail = "") {
   panel.hidden = state === "ready";
   if (heading) title.textContent = heading;
   if (description) message.textContent = description;
+  updateSetupBanner();
 }
 
 function openDrawer(id) {
@@ -113,7 +118,7 @@ function focusableElements(container) {
 }
 
 function updateSetupBanner() {
-  document.querySelector("#setup-banner").hidden = modelConfigured;
+  document.querySelector("#setup-banner").hidden = modelConfigured || engineState !== "ready";
   document.querySelector("#remote-ai-notice").hidden = modelConfigured;
 }
 
@@ -264,6 +269,10 @@ async function loadWikiResult(task) {
   const title = document.querySelector("#result-title");
   const message = document.querySelector("#result-message");
   const pagesContainer = document.querySelector("#result-pages");
+  if (String(task.id || "").startsWith("space_")) {
+    activeSpaceId = task.id.slice("space_".length);
+    localStorage.setItem("codeinsight-active-space", activeSpaceId);
+  }
   openDrawer("result-panel");
   title.textContent = `${task.owner}/${task.repo} 分析结果`;
   message.className = "message";
@@ -276,6 +285,7 @@ async function loadWikiResult(task) {
       repo_type: task.repo_type,
       language: task.language,
     });
+    if (activeSpaceId) query.set("space_id", activeSpaceId);
     const cache = await api(`/api/wiki_cache?${query}`);
     if (!cache) throw new Error("分析缓存不存在，请重新运行分析");
     const generated = cache.generated_pages || {};
@@ -346,21 +356,61 @@ async function retryTask(task) {
   await refreshWorkspace();
 }
 
+function taskStatusKind(status) {
+  if (status === "completed") return "ready";
+  if (status === "failed" || status === "cancelled") return "failed";
+  return "waiting";
+}
+
+function taskStatusLabel(status) {
+  return {
+    pending: "排队中",
+    running: "运行中",
+    paused: "已暂停",
+    completed: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  }[status] || status;
+}
+
+function renderEmptyState(container, title, hint) {
+  const wrap = document.createElement("div");
+  wrap.className = "empty-state";
+  const text = document.createElement("p");
+  text.className = "empty";
+  text.textContent = title;
+  wrap.append(text);
+  if (hint) {
+    const extra = document.createElement("p");
+    extra.className = "hint";
+    extra.textContent = hint;
+    wrap.append(extra);
+  }
+  container.replaceChildren(wrap);
+}
+
 function renderTask(task) {
   const card = document.createElement("article");
   card.className = "task";
   const detail = document.createElement("div");
+  const head = document.createElement("div");
+  head.className = "card-head";
   const title = document.createElement("h3");
   title.textContent = task.name || `${task.owner}/${task.repo}`;
+  const badge = document.createElement("span");
+  badge.className = `badge ${taskStatusKind(task.status)}`;
+  badge.textContent = taskStatusLabel(task.status);
+  head.append(title, badge);
   const status = document.createElement("p");
-  status.textContent = `${task.status} · ${task.pages_done}/${task.pages_total || "?"} 页`;
+  status.className = "meta";
+  status.textContent = `${task.pages_done}/${task.pages_total || "?"} 页`;
   const progress = document.createElement("div");
   progress.className = "progress";
   const bar = document.createElement("span");
   const percent = task.pages_total ? (task.pages_done / task.pages_total) * 100 : 3;
   bar.style.width = `${Math.min(100, percent)}%`;
   progress.append(bar);
-  detail.append(title, status, progress);
+  detail.append(head, status, progress);
   if (task.error) {
     const error = document.createElement("p");
     error.className = "task-error";
@@ -402,14 +452,15 @@ function renderTaskList() {
     if (taskFilter === "completed") return task.status === "completed";
     return true;
   });
-  list.replaceChildren();
   if (!tasks.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = taskFilter === "all" ? "尚无分析任务。" : "当前筛选下没有任务。";
-    list.append(empty);
+    renderEmptyState(
+      list,
+      taskFilter === "all" ? "尚无分析任务。" : "当前筛选下没有任务。",
+      taskFilter === "all" ? "添加项目后会在这里看到分析进度。" : "",
+    );
     return;
   }
+  list.replaceChildren();
   tasks.forEach((task) => list.append(renderTask(task)));
 }
 
@@ -449,14 +500,15 @@ function renderContinuousProject(project) {
   const title = document.createElement("h3");
   title.textContent = project.request?.repo || project.id;
   const path = document.createElement("p");
+  path.className = "card-path";
   path.textContent = project.request?.repo_url || project.request?.localPath || "本地项目";
-  const schedule = document.createElement("p");
-  schedule.textContent = project.night_start
-    ? `${project.night_start}–${project.night_end} · 每 ${project.poll_seconds} 秒扫描`
-    : `全天监控 · 每 ${project.poll_seconds} 秒扫描`;
-  const scan = document.createElement("p");
-  scan.textContent = `最近扫描：${formatSyncTime(project.last_scan_at)}`;
-  detail.append(title, path, schedule, scan);
+  const meta = document.createElement("p");
+  meta.className = "meta";
+  const schedule = project.night_start
+    ? `${project.night_start}–${project.night_end} · 每 ${project.poll_seconds} 秒`
+    : `全天监控 · 每 ${project.poll_seconds} 秒`;
+  meta.textContent = `${schedule} · ${formatSyncTime(project.last_scan_at)}`;
+  detail.append(title, path, meta);
   const actions = document.createElement("div");
   actions.className = "task-actions";
   const pause = document.createElement("button");
@@ -493,13 +545,10 @@ async function loadContinuousProjects() {
   const list = document.querySelector("#continuous-project-list");
   try {
     latestContinuousProjects = await api("/continuous/projects");
-    list.replaceChildren();
     if (!latestContinuousProjects.length) {
-      const empty = document.createElement("p");
-      empty.className = "empty";
-      empty.textContent = "尚未添加本地持续项目。";
-      list.append(empty);
+      renderEmptyState(list, "尚未添加本地持续项目。", "点击「添加」选择工作目录。");
     } else {
+      list.replaceChildren();
       latestContinuousProjects.forEach((project) => {
         list.append(renderContinuousProject(project));
       });
@@ -556,17 +605,7 @@ function renderRemoteProject(project) {
   status.textContent = project.last_error
     ? `${stageLabels[project.stage] || project.stage}：${project.last_error}`
     : `${stageLabels[project.stage] || "已保存"} · 最近同步：${formatSyncTime(project.last_sync_at)} · 每 ${project.poll_seconds} 秒`;
-  status.className = project.last_error ? "remote-error" : "";
-  const fingerprint = document.createElement("p");
-  fingerprint.className = "fingerprint";
-  fingerprint.textContent = project.host_fingerprint
-    ? `服务器指纹：${project.host_fingerprint}`
-    : "服务器指纹：等待首次连接";
-  const syncStats = document.createElement("p");
-  syncStats.className = "fingerprint";
-  syncStats.textContent = `已扫描 ${project.files_seen || 0} 个文件 · 排除 ${project.files_excluded || 0} · 超大 ${project.files_oversize || 0} · 跳过链接 ${project.symlinks_skipped || 0}`;
-  const flow = document.createElement("p");
-  flow.className = "fingerprint";
+  status.className = project.last_error ? "remote-error" : "meta";
   const projectFlow = {
     saved: "指纹 ✓  →  等待连接  →  同步  →  分析",
     connecting: "指纹 ✓  →  正在连接…  →  同步  →  分析",
@@ -575,8 +614,23 @@ function renderRemoteProject(project) {
     analyzing: "指纹 ✓  →  连接 ✓  →  同步 ✓  →  正在分析…",
     failed: "流程中断 · 可查看错误并重试",
   };
+  const flow = document.createElement("p");
+  flow.className = "meta";
   flow.textContent = projectFlow[project.stage] || projectFlow.saved;
-  detail.append(title, status, flow, fingerprint, syncStats);
+  const extras = document.createElement("details");
+  extras.className = "card-extras";
+  const summary = document.createElement("summary");
+  summary.textContent = "连接与同步详情";
+  const fingerprint = document.createElement("p");
+  fingerprint.className = "fingerprint";
+  fingerprint.textContent = project.host_fingerprint
+    ? `服务器指纹：${project.host_fingerprint}`
+    : "服务器指纹：等待首次连接";
+  const syncStats = document.createElement("p");
+  syncStats.className = "fingerprint";
+  syncStats.textContent = `已扫描 ${project.files_seen || 0} 个文件 · 排除 ${project.files_excluded || 0} · 超大 ${project.files_oversize || 0} · 跳过链接 ${project.symlinks_skipped || 0}`;
+  extras.append(summary, fingerprint, syncStats);
+  detail.append(title, status, flow, extras);
 
   const actions = document.createElement("div");
   actions.className = "task-actions";
@@ -653,13 +707,12 @@ async function loadRemoteProjects() {
   const list = document.querySelector("#remote-project-list");
   try {
     const projects = await api("/remote/projects");
-    list.replaceChildren();
+    const placeholder = document.querySelector("#terminal-placeholder");
+    if (placeholder) placeholder.hidden = projects.length > 0;
     if (!projects.length) {
-      const empty = document.createElement("p");
-      empty.className = "empty";
-      empty.textContent = "尚未连接 Ubuntu 项目。";
-      list.append(empty);
+      renderEmptyState(list, "尚未连接 Ubuntu 项目。", "通过顶部「连接 Ubuntu」添加远程目录。");
     } else {
+      list.replaceChildren();
       projects.forEach((project) => list.append(renderRemoteProject(project)));
     }
   } catch (error) {
@@ -683,7 +736,7 @@ async function refreshWorkspace({ includeSettings = false } = {}) {
   refreshPromise = (async () => {
     do {
       refreshQueued = false;
-      const jobs = [loadContinuousProjects(), loadRemoteProjects(), loadTasks()];
+      const jobs = [loadContinuousProjects(), loadRemoteProjects(), loadTasks(), loadKnowledgeSpaces()];
       if (includeSettings) jobs.push(loadModelSettings(), loadOllamaStatus());
       const results = await Promise.allSettled(jobs);
       const rejected = results.filter((result) => result.status === "rejected");
@@ -703,12 +756,26 @@ async function refreshWorkspace({ includeSettings = false } = {}) {
 function updateModelForm() {
   const provider = document.querySelector("#model-provider");
   const keyLabel = document.querySelector("#api-key-label");
+  const compatible = document.querySelector("#compatible-fields");
   provider.value = modelProvider;
   keyLabel.hidden = modelProvider === "ollama";
+  compatible.hidden = modelProvider !== "openai_compatible";
   const state = document.querySelector("#provider-state");
   state.textContent = modelProvider === savedModelProvider
     ? `当前已保存：${provider.options[provider.selectedIndex]?.text || savedModelProvider}`
     : `草稿：${provider.options[provider.selectedIndex]?.text || modelProvider}（尚未保存；项目仍使用 ${savedModelProvider}）`;
+}
+
+function ensureModelOption(modelId) {
+  const select = document.querySelector("#model-id");
+  if (!modelId) return;
+  if (![...select.options].some((option) => option.value === modelId)) {
+    const option = document.createElement("option");
+    option.value = modelId;
+    option.textContent = modelId;
+    select.append(option);
+  }
+  select.value = modelId;
 }
 
 async function loadModelSettings() {
@@ -723,6 +790,20 @@ async function loadModelSettings() {
       modelProvider = savedModelProvider;
     }
     modelConfigured = settings.configured;
+    if (settings.base_url) {
+      document.querySelector("#model-base-url").value = settings.base_url;
+    }
+    if (settings.selected_model) {
+      savedModelId = settings.selected_model;
+      localStorage.setItem("codeinsight-model-id", savedModelId);
+      ensureModelOption(savedModelId);
+    }
+    if (settings.embedder_mode) {
+      document.querySelector("#embedder-mode").value = settings.embedder_mode;
+    }
+    if (settings.wiki_page_concurrency) {
+      document.querySelector("#wiki-page-concurrency").value = settings.wiki_page_concurrency;
+    }
     const tier = settings.ollama_tier || localStorage.getItem("codeinsight-ollama-tier") || "auto";
     if (document.activeElement !== document.querySelector("#ollama-tier")) {
       document.querySelector("#ollama-tier").value = tier;
@@ -864,16 +945,33 @@ document.querySelector("#model-form").addEventListener("submit", async (event) =
   try {
     message.className = "message";
     message.textContent = "正在保存模型设置…";
+    const payload = {
+      provider: modelProvider,
+      api_key: apiKey || null,
+    };
+    if (modelProvider === "openai_compatible") {
+      payload.base_url = document.querySelector("#model-base-url").value.trim();
+      payload.selected_model = document.querySelector("#model-id").value.trim();
+      payload.embedder_mode = document.querySelector("#embedder-mode").value;
+      payload.wiki_page_concurrency = Number(document.querySelector("#wiki-page-concurrency").value);
+      if (!payload.base_url) throw new Error("请填写 API 地址");
+    }
     const settings = await api("/desktop/settings", {
       method: "POST",
-      body: JSON.stringify({ provider: modelProvider, api_key: apiKey || null }),
+      body: JSON.stringify(payload),
     });
     if (!settings.configured) {
-      throw new Error(`${modelProvider} 需要有效的 API Key`);
+      throw new Error(
+        modelProvider === "openai_compatible"
+          ? "自定义模型需要有效的 API 地址和 API Key"
+          : `${modelProvider} 需要有效的 API Key`,
+      );
     }
     savedModelProvider = settings.provider;
     modelProvider = savedModelProvider;
+    savedModelId = settings.selected_model || savedModelId;
     localStorage.setItem("codeinsight-model-provider", savedModelProvider);
+    if (savedModelId) localStorage.setItem("codeinsight-model-id", savedModelId);
     updateModelForm();
     message.textContent = "设置已保存，正在重启应用并加载模型配置…";
     const invoke = window.__TAURI__?.core?.invoke;
@@ -969,13 +1067,26 @@ document.querySelector("#project-form").addEventListener("submit", async (event)
       throw new Error("请先在“AI 模型设置”中配置模型服务");
     }
     body.task.provider = savedModelProvider;
-    message.textContent = "正在建立文件快照…";
-    await api("/continuous/projects", {
+    if (savedModelId) body.task.model = savedModelId;
+    const included = [...document.querySelectorAll("#subdir-list input[type=checkbox]:checked")]
+      .map((input) => input.value);
+    message.textContent = "正在建立知识库…";
+    await api("/knowledge/spaces", {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        workspace_root: path,
+        included_dirs: included,
+        language: "zh",
+        provider: savedModelProvider,
+        model: savedModelId || null,
+        analyze_now: true,
+        night_start: body.night_start,
+        night_end: body.night_end,
+        poll_seconds: body.poll_seconds,
+      }),
       timeout: 120000,
     });
-    message.textContent = "项目已加入持续分析。";
+    message.textContent = "项目已加入持续分析，并按子仓创建知识库。";
     await refreshWorkspace();
     closeDrawers();
   } catch (error) {
@@ -994,10 +1105,12 @@ document.querySelector("#projects-add-button").addEventListener("click", () => {
   selectSource(false);
 });
 document.querySelector("#terminal-open-project-button").addEventListener("click", () => {
+  selectWorkspaceSource(true);
   openDrawer("project-drawer");
   selectSource(true);
 });
 document.querySelector("#connect-ubuntu-button").addEventListener("click", () => {
+  selectWorkspaceSource(true);
   openDrawer("project-drawer");
   selectSource(true);
 });
@@ -1009,6 +1122,21 @@ document.querySelectorAll("[data-close-drawer]").forEach((button) => {
   button.addEventListener("click", () => closeDrawers());
 });
 document.querySelector("#close-result-button").addEventListener("click", () => closeDrawers());
+
+function selectWorkspaceSource(remote) {
+  const localTab = document.querySelector("#workspace-local-tab");
+  const remoteTab = document.querySelector("#workspace-remote-tab");
+  if (!localTab || !remoteTab) return;
+  localTab.classList.toggle("active", !remote);
+  remoteTab.classList.toggle("active", remote);
+  localTab.setAttribute("aria-selected", String(!remote));
+  remoteTab.setAttribute("aria-selected", String(remote));
+  localTab.tabIndex = remote ? -1 : 0;
+  remoteTab.tabIndex = remote ? 0 : -1;
+  document.querySelector("#continuous-project-list").hidden = remote;
+  document.querySelector("#remote-project-list").hidden = !remote;
+  localStorage.setItem("codeinsight-workspace-source", remote ? "remote" : "local");
+}
 
 function selectSource(remote) {
   const localTab = document.querySelector("#source-local-tab");
@@ -1027,6 +1155,9 @@ function selectSource(remote) {
 
 document.querySelector("#source-local-tab").addEventListener("click", () => selectSource(false));
 document.querySelector("#source-remote-tab").addEventListener("click", () => selectSource(true));
+document.querySelectorAll("#workspace-source-tabs button").forEach((button) => {
+  button.addEventListener("click", () => selectWorkspaceSource(button.dataset.workspaceSource === "remote"));
+});
 document.querySelector("#deferred-restart-button").addEventListener("click", async () => {
   if (!restartDeferred) return;
   await window.__TAURI__.core.invoke("restart_app");
@@ -1087,6 +1218,7 @@ function enableTablistKeyboard(tablist, activate) {
 }
 
 enableTablistKeyboard(document.querySelector("#task-filters"), (tab) => tab.click());
+enableTablistKeyboard(document.querySelector("#workspace-source-tabs"), (tab) => tab.click());
 enableTablistKeyboard(document.querySelector(".drawer-tabs"), (tab) => {
   selectSource(tab.id === "source-remote-tab");
 });
@@ -1251,8 +1383,223 @@ document.querySelector("#update-button").addEventListener("click", async () => {
   }
 });
 
+async function loadKnowledgeSpaces() {
+  if (engineState !== "ready") return;
+  const list = document.querySelector("#knowledge-space-list");
+  const select = document.querySelector("#active-space");
+  try {
+    latestKnowledgeSpaces = await api("/knowledge/spaces");
+    const groups = new Map();
+    latestKnowledgeSpaces.forEach((space) => {
+      const key = space.parent_workspace;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(space);
+    });
+    select.replaceChildren();
+    if (!latestKnowledgeSpaces.length) {
+      renderEmptyState(list, "添加项目后会按子仓分类知识库。", "每个工作目录或子仓对应一个可切换的知识空间。");
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "尚未生成知识库";
+      select.append(option);
+      return;
+    }
+    list.replaceChildren();
+    if (!latestKnowledgeSpaces.some((space) => space.space_id === activeSpaceId)) {
+      activeSpaceId = latestKnowledgeSpaces[0].space_id;
+      localStorage.setItem("codeinsight-active-space", activeSpaceId);
+    }
+    for (const [parent, spaces] of groups) {
+      const heading = document.createElement("p");
+      heading.className = "list-group-label";
+      heading.textContent = parent;
+      list.append(heading);
+      spaces.forEach((space) => {
+        const option = document.createElement("option");
+        option.value = space.space_id;
+        option.textContent = space.label;
+        if (space.space_id === activeSpaceId) option.selected = true;
+        select.append(option);
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = `continuous-project ${space.space_id === activeSpaceId ? "active-space" : ""}`;
+        const body = document.createElement("div");
+        const title = document.createElement("h3");
+        title.textContent = space.label;
+        const path = document.createElement("p");
+        path.className = "card-path";
+        path.textContent = space.included_dirs.join(", ") || "整个工作目录";
+        body.append(title, path);
+        card.append(body);
+        card.addEventListener("click", () => {
+          activeSpaceId = space.space_id;
+          localStorage.setItem("codeinsight-active-space", activeSpaceId);
+          loadKnowledgeSpaces();
+        });
+        list.append(card);
+      });
+    }
+  } catch (error) {
+    renderListError(list, "知识库读取失败", error);
+  }
+}
+
+function appendAskMessage(role, text) {
+  const box = document.querySelector("#ask-messages");
+  const item = document.createElement("div");
+  item.className = `ask-message ${role}`;
+  item.textContent = text;
+  box.append(item);
+  box.scrollTop = box.scrollHeight;
+  return item;
+}
+
+document.querySelector("#active-space").addEventListener("change", (event) => {
+  activeSpaceId = event.target.value;
+  localStorage.setItem("codeinsight-active-space", activeSpaceId);
+  loadKnowledgeSpaces();
+});
+
+document.querySelector("#detect-subdirs-button").addEventListener("click", async () => {
+  const path = document.querySelector("#project-path").value.trim();
+  const list = document.querySelector("#subdir-list");
+  if (!path) {
+    list.innerHTML = '<p class="empty">请先填写工作目录。</p>';
+    return;
+  }
+  list.innerHTML = '<p class="empty">正在扫描…</p>';
+  try {
+    const detected = await api("/knowledge/spaces/detect", {
+      method: "POST",
+      body: JSON.stringify({ workspace_root: path }),
+    });
+    list.replaceChildren();
+    if (!detected.candidates.length) {
+      list.innerHTML = '<p class="empty">未发现子仓，将分析整个工作目录。</p>';
+      return;
+    }
+    detected.candidates.forEach((candidate) => {
+      const label = document.createElement("label");
+      label.className = "checkbox";
+      label.innerHTML = `<input type="checkbox" value="${candidate.path}" />${candidate.label}（${candidate.kind}）`;
+      list.append(label);
+    });
+  } catch (error) {
+    list.innerHTML = `<p class="message error">${errorMessage(error)}</p>`;
+  }
+});
+
+document.querySelector("#discover-models-button").addEventListener("click", async () => {
+  const message = document.querySelector("#model-message");
+  try {
+    message.className = "message";
+    message.textContent = "正在获取模型列表…";
+    const result = await api("/desktop/models/discover", {
+      method: "POST",
+      body: JSON.stringify({
+        base_url: document.querySelector("#model-base-url").value.trim(),
+        api_key: document.querySelector("#model-api-key").value.trim() || null,
+      }),
+    });
+    const select = document.querySelector("#model-id");
+    select.replaceChildren();
+    (result.models || []).forEach((model) => {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.name;
+      select.append(option);
+    });
+    if (savedModelId) ensureModelOption(savedModelId);
+    message.textContent = `已获取 ${result.models?.length || 0} 个模型`;
+  } catch (error) {
+    message.className = "message error";
+    message.textContent = errorMessage(error);
+  }
+});
+
+document.querySelector("#test-model-button").addEventListener("click", async () => {
+  const message = document.querySelector("#model-message");
+  try {
+    message.className = "message";
+    message.textContent = "正在测试连接…";
+    await api("/desktop/models/test", {
+      method: "POST",
+      body: JSON.stringify({
+        base_url: document.querySelector("#model-base-url").value.trim(),
+        api_key: document.querySelector("#model-api-key").value.trim() || null,
+        model: document.querySelector("#model-id").value.trim(),
+      }),
+    });
+    message.textContent = "连接成功";
+  } catch (error) {
+    message.className = "message error";
+    message.textContent = errorMessage(error);
+  }
+});
+
+document.querySelector("#result-tabs").addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-result-tab]");
+  if (!tab) return;
+  resultTab = tab.dataset.resultTab;
+  document.querySelectorAll("#result-tabs [data-result-tab]").forEach((button) => {
+    button.classList.toggle("active", button === tab);
+    button.setAttribute("aria-selected", button === tab ? "true" : "false");
+  });
+  document.querySelector("#result-pages").hidden = resultTab !== "docs";
+  document.querySelector("#ask-panel").hidden = resultTab !== "ask";
+});
+
+document.querySelector("#ask-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const question = document.querySelector("#ask-input").value.trim();
+  const message = document.querySelector("#result-message");
+  if (!question) return;
+  if (!activeSpaceId) {
+    message.className = "message error";
+    message.textContent = "请先选择知识库";
+    return;
+  }
+  appendAskMessage("user", question);
+  const answer = appendAskMessage("assistant", "正在检索知识库…");
+  document.querySelector("#ask-input").value = "";
+  try {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!desktopToken && invoke) {
+      desktopToken = await invoke("desktop_session_token");
+    }
+    const response = await fetch(`${apiBase}/knowledge/ask`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CodeInsight-Token": desktopToken || "",
+      },
+      body: JSON.stringify({
+        space_id: activeSpaceId,
+        question,
+        provider: savedModelProvider,
+        model: savedModelId || null,
+        language: "zh",
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    answer.textContent = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      answer.textContent += decoder.decode(value, { stream: true });
+    }
+  } catch (error) {
+    answer.textContent = errorMessage(error);
+  }
+});
+
 document.querySelector("#ollama-tier").value =
   localStorage.getItem("codeinsight-ollama-tier") || "auto";
+selectWorkspaceSource(localStorage.getItem("codeinsight-workspace-source") === "remote");
 updateModelForm();
 initializeUpdateProgress();
 initializeEngineDiagnostics().finally(waitForEngine);

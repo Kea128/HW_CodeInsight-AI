@@ -29,6 +29,9 @@ class RepoRequestBase(BaseModel):
         default_factory=list,
         description="List or newline-separated string of file patterns to include exclusively",
     )
+    space_id: str | None = Field(
+        None, description="Knowledge space identity for scoped indexes and wikis"
+    )
 
     @field_validator(
         "excluded_dirs",

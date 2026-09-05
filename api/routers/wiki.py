@@ -177,6 +177,7 @@ async def read_wiki(
     repo: str = Query(..., description="Repository name"),
     repo_type: str = Query(..., description="Repository type (e.g., github, gitlab)"),
     language: str = Query(..., description="Language of the wiki content"),
+    space_id: str | None = Query(None, description="Knowledge space identity"),
 ):
     """Retrieve cached wiki data (structure and generated pages) for a repository."""
     supported_langs = configs["lang_config"]["supported_languages"]
@@ -186,7 +187,9 @@ async def read_wiki(
     logger.info(
         f"Attempting to retrieve wiki cache for {owner}/{repo} ({repo_type}), lang: {language}"
     )
-    cached_data = await read_wiki_cache(owner, repo, repo_type, language)
+    cached_data = await read_wiki_cache(
+        owner, repo, repo_type, language, space_id=space_id
+    )
     if cached_data:
         return cached_data
     # Return 200 with null body if not found (frontend expects this behavior)

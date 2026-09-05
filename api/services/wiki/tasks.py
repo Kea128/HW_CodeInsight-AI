@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from api.desktop_settings import selected_ollama_model
+from api.desktop_settings import selected_desktop_model, selected_ollama_model
 from api.logger import get_logger
 from api.rag import repo_index_exist
 from api.repository import Repo
@@ -51,10 +51,15 @@ logger = get_logger(__name__)
 
 
 def _resolve_desktop_model(request: WikiTaskRequest) -> WikiTaskRequest:
-    if request.provider != "ollama" or request.model:
+    if request.model:
         return request
-    model = os.environ.get("CODEINSIGHT_OLLAMA_MODEL") or selected_ollama_model()
-    return request.model_copy(update={"model": model}) if model else request
+    if request.provider == "ollama":
+        model = os.environ.get("CODEINSIGHT_OLLAMA_MODEL") or selected_ollama_model()
+        return request.model_copy(update={"model": model}) if model else request
+    if request.provider == "openai_compatible":
+        model = os.environ.get("CODEINSIGHT_DESKTOP_MODEL") or selected_desktop_model()
+        return request.model_copy(update={"model": model}) if model else request
+    return request
 
 
 def _env_int(name, default: int) -> int:
@@ -295,6 +300,7 @@ class TaskRegistry:
                 repo=task.request.repo,
                 repo_type=task.request.type,
                 language=task.request.language,
+                space_id=task.request.space_id,
             ):
                 return WikiTaskSubmitResult(
                     task_id=key,
@@ -412,7 +418,7 @@ async def generate_repo_wiki(task: WikiTask) -> None:
         repo = Repo(r.repo_url, r.type, access_token=r.token)
 
         # Req 1.1: build the index only if it does not already exist.
-        if r.force or not repo_index_exist(repo):
+        if r.force or not repo_index_exist(repo, space_id=r.space_id):
             task.status = TaskStatus.INDEXING
             task.persist("indexing")
             logger.info("Indexing %s", task.repo_key)
@@ -468,6 +474,7 @@ async def _save(
         repo=task.request.repo,
         repo_type=task.request.type,
         language=task.request.language,
+        space_id=task.request.space_id,
         wiki_cache=WikiCacheData(
             wiki_structure=task.wiki_structure,
             generated_pages=pages,
@@ -486,6 +493,18 @@ async def _save(
         raise RuntimeError("Failed to save generated wiki cache")
 
 
+def _is_rate_limit_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(
+        token in text
+        for token in ("429", "rate limit", "too many requests", "tpm", "rpm")
+    )
+
+
+def _page_concurrency() -> int:
+    return max(1, _env_int("DEEPWIKI_WIKI_PAGE_CONCURRENCY", WIKI_PAGE_CONCURRENCY))
+
+
 async def _generate_page_with_retry(task: WikiTask, page: WikiPage) -> WikiPage:
     last_error: Exception | None = None
     for attempt in range(WIKI_PAGE_RETRIES + 1):
@@ -500,6 +519,8 @@ async def _generate_page_with_retry(task: WikiTask, page: WikiPage) -> WikiPage:
                 WIKI_PAGE_RETRIES + 1,
                 e,
             )
+            if _is_rate_limit_error(e) and attempt < WIKI_PAGE_RETRIES:
+                await asyncio.sleep(min(2**attempt, 16))
     # Give up: return an error-placeholder page so the wiki still completes.
     return page.model_copy(
         update={"content": f"Error generating content: {last_error}"}
@@ -514,7 +535,7 @@ async def _generate_pages(
     A page that keeps failing gets an error-placeholder instead of failing the
     whole task (SPEC.md §7.1), matching the current frontend behavior.
     """
-    sema = asyncio.Semaphore(max(1, WIKI_PAGE_CONCURRENCY))
+    sema = asyncio.Semaphore(_page_concurrency())
     pages = task.generated_pages
 
     async def one(page: WikiPage) -> None:

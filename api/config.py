@@ -4,6 +4,10 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Union
 
+from api.desktop_runtime import configure_runtime
+
+configure_runtime()
+
 from api.clients import (
     AnthropicBedrockClient,
     AzureAIClient,
@@ -92,6 +96,7 @@ _DEFAULT_PROVIDER_MAP = {
     "azure": AzureAIClient,
     "dashscope": DashscopeClient,
     "anthropic": AnthropicBedrockClient,
+    "openai_compatible": OpenAIClient,
 }
 
 
@@ -396,7 +401,9 @@ def get_model_config(provider="google", model=None):
         model_params = provider_config["models"][model]
     else:
         default_model = provider_config.get("default_model")
-        model_params = provider_config["models"][default_model]
+        model_params = provider_config.get("models", {}).get(
+            default_model, {"temperature": 0.7, "top_p": 0.8}
+        )
 
     # Prepare base configuration
     result = {

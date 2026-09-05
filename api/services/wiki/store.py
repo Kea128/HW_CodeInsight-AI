@@ -10,10 +10,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from api.schemas.knowledge import KnowledgeSpace
 from api.utils import deepwiki_root
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def default_database_path() -> str:
@@ -56,6 +57,7 @@ class WikiTaskStore:
                 4: self._migration_4_remote_status,
                 5: self._migration_5_pending_changes,
                 6: self._migration_6_retention_indexes,
+                7: self._migration_7_knowledge_spaces,
             }
             for version in range(current + 1, SCHEMA_VERSION + 1):
                 migration = migrations[version]
@@ -190,6 +192,29 @@ class WikiTaskStore:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_wiki_tasks_status_updated "
             "ON wiki_tasks(status, updated_at)"
+        )
+
+    @staticmethod
+    def _migration_7_knowledge_spaces(connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_spaces (
+                space_id TEXT PRIMARY KEY,
+                workspace_root TEXT NOT NULL,
+                included_dirs_json TEXT NOT NULL DEFAULT '[]',
+                excluded_dirs_json TEXT NOT NULL DEFAULT '[]',
+                label TEXT NOT NULL,
+                parent_workspace TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT 'zh',
+                provider TEXT,
+                model TEXT,
+                last_task_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_knowledge_spaces_parent
+                ON knowledge_spaces(parent_workspace, updated_at);
+            """
         )
 
     @staticmethod
@@ -499,3 +524,116 @@ class WikiTaskStore:
             "pause_requested": bool(row["pause_requested"]),
             "cancel_requested": bool(row["cancel_requested"]),
         }
+
+    def upsert_knowledge_space(
+        self,
+        *,
+        workspace_root: str,
+        included_dirs: list[str],
+        excluded_dirs: list[str],
+        language: str,
+        provider: str | None,
+        model: str | None,
+        last_task_id: str | None = None,
+    ) -> KnowledgeSpace:
+        from api.services.knowledge.spaces import compute_space_id, knowledge_label
+
+        now = int(time.time() * 1000)
+        space_id = compute_space_id(workspace_root, included_dirs, language)
+        label = knowledge_label(workspace_root, included_dirs)
+        parent = os.path.normpath(workspace_root)
+        with self._lock, self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at, last_task_id FROM knowledge_spaces WHERE space_id = ?",
+                (space_id,),
+            ).fetchone()
+            created_at = existing["created_at"] if existing else now
+            task_id = last_task_id or (existing["last_task_id"] if existing else None)
+            connection.execute(
+                """
+                INSERT INTO knowledge_spaces (
+                    space_id, workspace_root, included_dirs_json, excluded_dirs_json,
+                    label, parent_workspace, language, provider, model,
+                    last_task_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(space_id) DO UPDATE SET
+                    workspace_root=excluded.workspace_root,
+                    included_dirs_json=excluded.included_dirs_json,
+                    excluded_dirs_json=excluded.excluded_dirs_json,
+                    label=excluded.label,
+                    parent_workspace=excluded.parent_workspace,
+                    language=excluded.language,
+                    provider=excluded.provider,
+                    model=excluded.model,
+                    last_task_id=COALESCE(excluded.last_task_id, knowledge_spaces.last_task_id),
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    space_id,
+                    workspace_root,
+                    self._json(included_dirs),
+                    self._json(excluded_dirs),
+                    label,
+                    parent,
+                    language,
+                    provider,
+                    model,
+                    task_id,
+                    created_at,
+                    now,
+                ),
+            )
+        return KnowledgeSpace(
+            space_id=space_id,
+            workspace_root=workspace_root,
+            included_dirs=included_dirs,
+            excluded_dirs=excluded_dirs,
+            label=label,
+            parent_workspace=parent,
+            language=language,
+            provider=provider,
+            model=model,
+            last_task_id=task_id,
+            created_at=created_at,
+            updated_at=now,
+        )
+
+    def list_knowledge_spaces(self) -> list[KnowledgeSpace]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM knowledge_spaces ORDER BY parent_workspace, label"
+            ).fetchall()
+        return [self._decode_space(row) for row in rows]
+
+    def get_knowledge_space(self, space_id: str) -> KnowledgeSpace | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_spaces WHERE space_id = ?",
+                (space_id,),
+            ).fetchone()
+        return self._decode_space(row) if row else None
+
+    def set_knowledge_space_task(self, space_id: str, task_id: str) -> None:
+        now = int(time.time() * 1000)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE knowledge_spaces SET last_task_id = ?, updated_at = ? "
+                "WHERE space_id = ?",
+                (task_id, now, space_id),
+            )
+
+    def _decode_space(self, row: sqlite3.Row) -> KnowledgeSpace:
+        return KnowledgeSpace(
+            space_id=row["space_id"],
+            workspace_root=row["workspace_root"],
+            included_dirs=json.loads(row["included_dirs_json"] or "[]"),
+            excluded_dirs=json.loads(row["excluded_dirs_json"] or "[]"),
+            label=row["label"],
+            parent_workspace=row["parent_workspace"],
+            language=row["language"],
+            provider=row["provider"],
+            model=row["model"],
+            last_task_id=row["last_task_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
