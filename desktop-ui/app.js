@@ -54,6 +54,19 @@ function errorMessage(error) {
   return "未知错误";
 }
 
+function formatAppVersion(version) {
+  if (!version || version === "unknown" || version === "development") return "";
+  return version.startsWith("v") ? version : `v${version}`;
+}
+
+function renderAppVersion() {
+  const version = formatAppVersion(desktopAppVersion) || formatAppVersion(engineVersion);
+  const header = document.querySelector("#app-version");
+  const settings = document.querySelector("#settings-app-version");
+  if (header) header.textContent = version || "版本未知";
+  if (settings) settings.textContent = version ? `当前版本：${version}` : "当前版本：未知";
+}
+
 function setEngineStatus(text, kind) {
   const element = document.querySelector("#engine-status");
   element.textContent = text;
@@ -176,6 +189,7 @@ async function waitForEngine() {
       const health = await api("/health", { timeout: 4000 });
       if (generation !== engineProbeGeneration) return;
       engineVersion = health.engine_version || "";
+      renderAppVersion();
       if (
         desktopAppVersion
         && engineVersion
@@ -1275,6 +1289,7 @@ async function initializeEngineDiagnostics() {
   if (invoke) {
     engineLogPath = await invoke("daemon_log_path").catch(() => "");
     desktopAppVersion = await invoke("desktop_app_version").catch(() => "");
+    renderAppVersion();
   }
   if (listen) {
     await listen("engine-sidecar", (event) => {
@@ -1340,7 +1355,8 @@ document.querySelector("#update-button").addEventListener("click", async () => {
     if (!invoke) throw new Error("更新组件不可用");
     const version = await invoke("check_update");
     if (!version) {
-      window.alert("当前已是最新版本。");
+      const current = formatAppVersion(desktopAppVersion) || "未知";
+      window.alert(`当前已是最新版本（${current}）。`);
       return;
     }
     if (!window.confirm(`发现新版本 ${version}，是否立即下载并安装？`)) {

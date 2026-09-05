@@ -8,6 +8,8 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     html = (ROOT / "desktop-ui" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "desktop-ui" / "app.js").read_text(encoding="utf-8")
 
+    assert 'id="app-version"' in html
+    assert 'id="settings-app-version"' in html
     assert 'id="connect-ubuntu-button"' in html
     assert 'value="openai_compatible"' in html
     assert 'id="model-base-url"' in html

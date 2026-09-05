@@ -77,6 +77,11 @@ h3 { margin: 0 0 6px; font-size: var(--fs-card); font-weight: 600; }
   box-shadow: 0 0 0 1px rgba(94, 200, 240, .18);
 }
 .brand-tagline { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-aux); }
+.app-version, #app-version {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
 .status-cluster { justify-content: center; flex-wrap: wrap; }
 .header-actions { justify-content: flex-end; }
 .header-progress {

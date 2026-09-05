@@ -228,7 +228,7 @@ jobs:
         with:
           tagName: desktop-v__VERSION__
           releaseName: "CodeInsight-AI Desktop v__VERSION__"
-          releaseBody: "Windows desktop release that frees port 8001 from leftover analysis daemons before startup, keeps a single app instance, and publishes installers through a faster parallel pipeline."
+          releaseBody: "Windows desktop release that shows the installed version in the header and settings, frees port 8001 from leftover analysis daemons, and keeps a single app instance."
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true

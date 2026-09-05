@@ -73,6 +73,7 @@ async function boot() {
   new Function(appSource)();
   await vi.waitFor(() => {
     expect(document.querySelector("#engine-status").textContent).toContain("已就绪");
+    expect(document.querySelector("#app-version").textContent).toMatch(/v|版本/);
   });
 }
 
