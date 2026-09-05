@@ -1,5 +1,6 @@
 """Frozen desktop sidecar entry point."""
 
+import atexit
 import faulthandler
 import os
 import shutil
@@ -8,6 +9,13 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from api.desktop_port import (
+    DEFAULT_HOST,
+    desktop_port,
+    reclaim_listen_port,
+    remove_pid_file,
+    write_current_pid,
+)
 from api.desktop_runtime import configure_runtime
 
 
@@ -88,11 +96,16 @@ finally:
 
 
 def main() -> None:
-    _log("starting API server on 127.0.0.1:8001")
+    host = DEFAULT_HOST
+    port = desktop_port()
+    reclaim_listen_port(host, port, log=_log)
+    write_current_pid()
+    atexit.register(remove_pid_file)
+    _log(f"starting API server on {host}:{port}")
     uvicorn.run(
         app,
-        host="127.0.0.1",
-        port=int(os.environ.get("PORT", "8001")),
+        host=host,
+        port=port,
         reload=False,
         access_log=False,
         log_config=None,

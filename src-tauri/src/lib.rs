@@ -172,10 +172,22 @@ fn emit_update_progress(
     );
 }
 
+fn kill_sidecar_tree(child: CommandChild) {
+    let pid = child.pid();
+    let _ = child.kill();
+    #[cfg(target_os = "windows")]
+    if pid > 0 {
+        let mut command = Command::new("taskkill");
+        command.args(["/F", "/T", "/PID", &pid.to_string()]);
+        command.creation_flags(0x08000000);
+        let _ = command.status();
+    }
+}
+
 fn stop_daemon(app: &tauri::AppHandle) {
     if let Ok(mut process) = app.state::<DaemonProcess>().0.lock() {
         if let Some(child) = process.take() {
-            let _ = child.kill();
+            kill_sidecar_tree(child);
         }
     }
 }
@@ -224,7 +236,7 @@ fn restore_daemon(app: &tauri::AppHandle) {
                 if process.is_none() {
                     *process = Some(child);
                 } else {
-                    let _ = child.kill();
+                    kill_sidecar_tree(child);
                 }
             }
         }
@@ -785,6 +797,13 @@ fn desktop_app_version(app: tauri::AppHandle) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -829,7 +848,7 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             if let Ok(mut process) = app_handle.state::<DaemonProcess>().0.lock() {
                 if let Some(child) = process.take() {
-                    let _ = child.kill();
+                    kill_sidecar_tree(child);
                 }
             }
         }

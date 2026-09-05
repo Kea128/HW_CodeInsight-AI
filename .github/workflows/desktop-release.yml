@@ -9,22 +9,22 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  POETRY_VIRTUALENVS_IN_PROJECT: "true"
+
 jobs:
-  windows:
+  freeze:
+    name: Freeze daemon
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-
-      - uses: dtolnay/rust-toolchain@stable
+          cache: pip
 
       - name: Validate release channel and versions
         shell: pwsh
@@ -44,23 +44,26 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match desktop-v$packageVersion"
           }
 
-      - name: Install frontend and desktop tooling
-        run: |
-          npm ci
-          npm install --no-save @tauri-apps/cli@latest
-          npm run tauri icon desktop-ui/icon.svg
+      - name: Install Poetry
+        run: python -m pip install --disable-pip-version-check poetry
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: api/.venv
+          key: win-poetry-py311-${{ hashFiles('api/poetry.lock') }}
+          restore-keys: |
+            win-poetry-py311-
 
       - name: Install and freeze the analysis daemon
+        shell: pwsh
         run: |
-          python -m pip install poetry
           poetry install -C api --no-interaction
-          poetry -C api run python -m pip install pyinstaller
-          $encodingUrl = "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+          poetry -C api run python -m pip install --disable-pip-version-check pyinstaller
           $encodingCacheKey = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
           $encodingPath = "api/tiktoken-cache/$encodingCacheKey"
-          New-Item -ItemType Directory -Force "api/tiktoken-cache" | Out-Null
           if (-not (Test-Path $encodingPath)) {
-            Invoke-WebRequest -UseBasicParsing -Uri $encodingUrl -OutFile $encodingPath
+            throw "Vendored tiktoken encoding is missing: $encodingPath"
           }
           $encodingHash = (Get-FileHash $encodingPath -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($encodingHash -ne "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7") {
@@ -88,13 +91,12 @@ jobs:
             ]
           )
           "@ | Set-Content api/daemon-version.txt -Encoding UTF8
-          poetry -C api run python -m PyInstaller --noconfirm --clean --onefile --windowed --name codeinsight-daemon --version-file daemon-version.txt --paths .. --collect-all uvicorn --collect-all tiktoken --collect-submodules tiktoken_ext --collect-all adalflow --collect-all paramiko --collect-all keyring --collect-submodules keyring.backends --copy-metadata keyring --collect-all certifi --add-data "config;api/config" --add-data "tiktoken-cache;tiktoken_cache" daemon.py
-          New-Item -ItemType Directory -Force src-tauri/binaries
+          poetry -C api run python -m PyInstaller --noconfirm --onefile --windowed --name codeinsight-daemon --version-file daemon-version.txt --paths .. --collect-all uvicorn --collect-all tiktoken --collect-submodules tiktoken_ext --collect-all adalflow --collect-all paramiko --collect-all keyring --collect-submodules keyring.backends --copy-metadata keyring --collect-all certifi --add-data "config;api/config" --add-data "tiktoken-cache;tiktoken_cache" daemon.py
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
           Copy-Item api/dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
 
       - name: Run backend regression tests
-        run: |
-          poetry -C api run pytest ../tests/backend -q
+        run: poetry -C api run pytest ../tests/backend -q --tb=short
 
       - name: Smoke test frozen daemon
         shell: pwsh
@@ -138,9 +140,70 @@ jobs:
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
           }
 
-      - name: Validate desktop assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codeinsight-daemon-windows
+          path: src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  host-check:
+    name: Check desktop host
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: desktop-windows
+          add-job-id-key: false
+          cache-on-failure: true
+
+      - name: Lint and test desktop host
+        shell: pwsh
         run: |
-          npm run desktop:prepare
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo test --release --manifest-path src-tauri/Cargo.toml
+
+  publish:
+    name: Sign and publish
+    runs-on: windows-latest
+    timeout-minutes: 25
+    needs: [freeze, host-check]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: desktop-windows
+          add-job-id-key: false
+          cache-on-failure: true
+
+      - name: Install desktop build tooling
+        run: npm install --no-save --no-audit --no-fund @tauri-apps/cli@2 @xterm/xterm@6.0.0 @xterm/addon-fit@0.11.0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: codeinsight-daemon-windows
+          path: src-tauri/binaries
+
+      - name: Validate desktop assets
+        shell: pwsh
+        run: |
+          node scripts/prepare-desktop.mjs
           node --check desktop-ui/app.js
           node --check desktop-ui/terminal-ui.js
           if (-not (Test-Path "src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe")) {
@@ -149,22 +212,6 @@ jobs:
           if (-not (Test-Path "src-tauri/icons/icon.ico")) {
             throw "Desktop icon is missing"
           }
-
-      - name: Validate desktop host
-        shell: pwsh
-        run: |
-          cargo fmt --manifest-path src-tauri/Cargo.toml --check
-          cargo test --manifest-path src-tauri/Cargo.toml
-          $output = & cargo check --manifest-path src-tauri/Cargo.toml 2>&1
-          $exitCode = $LASTEXITCODE
-          $output | Write-Output
-          if ($exitCode -ne 0) {
-            $tail = (($output | Select-Object -Last 120) -join "`n") -replace "$([char]27)\[[0-9;]*m", ""
-            $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
-            Write-Output "::error title=Desktop host compilation failed::$annotation"
-            exit $exitCode
-          }
-          cargo build --release --manifest-path src-tauri/Cargo.toml
 
       - name: Build and publish signed installers
         uses: tauri-apps/tauri-action@v0
@@ -175,6 +222,7 @@ jobs:
         with:
           tagName: desktop-v__VERSION__
           releaseName: "CodeInsight-AI Desktop v__VERSION__"
-          releaseBody: "Windows desktop release with startup recovery, redesigned Ubuntu workflow, secure embedded terminal, reliable persistent tasks, and stronger local AI setup."
+          releaseBody: "Windows desktop release that reclaims a leftover analysis daemon on port 8001, keeps a single app instance, and publishes installers through a faster parallel pipeline."
           releaseDraft: false
           prerelease: false
+          updaterJsonPreferNsis: true
