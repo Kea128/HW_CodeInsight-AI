@@ -1370,7 +1370,7 @@ document.querySelector("#update-button").addEventListener("click", async () => {
     }
     document.querySelector("#update-status-panel").hidden = false;
     document.querySelector("#update-progress-text").textContent =
-      `版本 ${installedVersion} 已安装，正在自动重启…`;
+      `版本 ${installedVersion} 正在安装。请等待安装程序打开新版本；若仍显示旧版本，请完全退出后从开始菜单打开。`;
   } catch (error) {
     const detail = errorMessage(error);
     try {

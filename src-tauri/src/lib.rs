@@ -114,6 +114,26 @@ struct ManualUpdate {
     signature: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsInstallerKind {
+    Nsis,
+    Msi,
+}
+
+fn windows_installer_kind(url: &str, bytes: &[u8]) -> WindowsInstallerKind {
+    if bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
+        return WindowsInstallerKind::Msi;
+    }
+    let lowered = url.to_ascii_lowercase();
+    if bytes.starts_with(b"MZ") || lowered.contains(".exe") {
+        return WindowsInstallerKind::Nsis;
+    }
+    if lowered.contains(".msi") {
+        return WindowsInstallerKind::Msi;
+    }
+    WindowsInstallerKind::Nsis
+}
+
 #[derive(Deserialize)]
 struct UpdateManifest {
     version: String,
@@ -571,17 +591,20 @@ async fn install_with_windows(
     update: ManualUpdate,
 ) -> Result<String, String> {
     emit_update_progress(&app, "downloading", 0, None, true, "正在下载更新…");
-    let bytes = download_url_with_windows(app.clone(), update.url, true).await?;
+    let bytes = download_url_with_windows(app.clone(), update.url.clone(), true).await?;
     verify_update_signature(&bytes, &update.signature)?;
     let version = update.version;
-    let executable =
-        std::env::current_exe().map_err(|error| describe_error("无法定位当前应用", error))?;
+    let kind = windows_installer_kind(&update.url, &bytes);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    let extension = match kind {
+        WindowsInstallerKind::Nsis => "exe",
+        WindowsInstallerKind::Msi => "msi",
+    };
     let path = std::env::temp_dir().join(format!(
-        "codeinsight-update-{}-{nonce}.msi",
+        "codeinsight-update-{}-{nonce}.{extension}",
         std::process::id()
     ));
     let package_size = bytes.len() as u64;
@@ -598,7 +621,33 @@ async fn install_with_windows(
     stop_daemon(&app);
     let installer_path = path.clone();
     let install_result = tauri::async_runtime::spawn_blocking(move || {
-        let script = "$ErrorActionPreference='Stop';while(Get-Process -Id $env:CODEINSIGHT_PARENT_PID -ErrorAction SilentlyContinue){Start-Sleep -Milliseconds 200};$exitCode=1;try{$arguments=@('/i',('\"'+$env:CODEINSIGHT_UPDATE_PATH+'\"'),'/passive','/norestart');$installer=Start-Process msiexec.exe -ArgumentList $arguments -Wait -PassThru;$exitCode=$installer.ExitCode}finally{Remove-Item -LiteralPath $env:CODEINSIGHT_UPDATE_PATH -Force -ErrorAction SilentlyContinue;Start-Process -FilePath $env:CODEINSIGHT_APP_PATH};if($exitCode -notin @(0,3010)){exit $exitCode}";
+        let script = r#"
+$ErrorActionPreference='Stop'
+while (Get-Process -Id $env:CODEINSIGHT_PARENT_PID -ErrorAction SilentlyContinue) {
+  Start-Sleep -Milliseconds 200
+}
+$exitCode = 1
+try {
+  if ($env:CODEINSIGHT_INSTALLER_KIND -eq 'nsis') {
+    $installer = Start-Process -FilePath $env:CODEINSIGHT_UPDATE_PATH -ArgumentList @('/S','/P','/UPDATE','/R') -Wait -PassThru
+    $exitCode = $installer.ExitCode
+  } else {
+    $installer = Start-Process msiexec.exe -ArgumentList @('/i',('"{0}"' -f $env:CODEINSIGHT_UPDATE_PATH),'/passive','/norestart') -Wait -PassThru
+    $exitCode = $installer.ExitCode
+    if ($exitCode -in @(0, 3010)) {
+      $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'CodeInsight-AI\CodeInsight-AI.exe'),
+        (Join-Path ${env:ProgramFiles} 'CodeInsight-AI\CodeInsight-AI.exe')
+      )
+      $launch = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+      if ($launch) { Start-Process -FilePath $launch }
+    }
+  }
+} finally {
+  Remove-Item -LiteralPath $env:CODEINSIGHT_UPDATE_PATH -Force -ErrorAction SilentlyContinue
+}
+if ($exitCode -notin @(0, 3010)) { exit $exitCode }
+"#;
         let mut command = Command::new("powershell.exe");
         command
             .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
@@ -608,7 +657,13 @@ async fn install_with_windows(
                 "CODEINSIGHT_UPDATE_PATH",
                 installer_path.to_string_lossy().into_owned(),
             )
-            .env("CODEINSIGHT_APP_PATH", executable);
+            .env(
+                "CODEINSIGHT_INSTALLER_KIND",
+                match kind {
+                    WindowsInstallerKind::Nsis => "nsis",
+                    WindowsInstallerKind::Msi => "msi",
+                },
+            );
         #[cfg(target_os = "windows")]
         {
             command.creation_flags(0x08000000);
@@ -775,10 +830,12 @@ async fn install_update(app: tauri::AppHandle) -> Result<Option<String>, String>
         restore_daemon(&app);
         return Err(describe_error("更新包安装失败", error));
     }
-    let restart_app = app.clone();
+    // The Windows updater already launched the installer, which relaunches the
+    // new binary. Restarting the current process would reopen the old 0.2.7 exe.
+    let exit_app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(600)).await;
-        restart_app.request_restart();
+        exit_app.exit(0);
     });
     Ok(Some(version))
 }
@@ -907,6 +964,24 @@ mod tests {
         assert_eq!(
             parse_github_download_error("ERROR TIMEOUT\n").localized_summary(),
             "GitHub 更新检查超时，请检查网络后重试"
+        );
+    }
+
+    #[test]
+    fn windows_installer_kind_prefers_nsis_exe() {
+        assert_eq!(
+            windows_installer_kind(
+                "https://example.com/CodeInsight-AI_0.2.8_x64-setup.exe",
+                b"MZ"
+            ),
+            WindowsInstallerKind::Nsis
+        );
+        assert_eq!(
+            windows_installer_kind(
+                "https://example.com/CodeInsight-AI_0.2.8_x64_en-US.msi",
+                &[0xD0, 0xCF, 0x11, 0xE0]
+            ),
+            WindowsInstallerKind::Msi
         );
     }
 
