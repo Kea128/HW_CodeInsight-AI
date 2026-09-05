@@ -270,13 +270,9 @@ impl GithubDownloadError {
 
     fn localized_summary(&self) -> String {
         match self {
-            Self::Http(403) => {
-                "GitHub 拒绝了更新检查请求（HTTP 403），请稍后重试".to_string()
-            }
+            Self::Http(403) => "GitHub 拒绝了更新检查请求（HTTP 403），请稍后重试".to_string(),
             Self::Http(415) => "GitHub 更新接口不接受当前请求（HTTP 415）".to_string(),
-            Self::Http(429) => {
-                "GitHub 更新检查请求过于频繁（HTTP 429），请稍后重试".to_string()
-            }
+            Self::Http(429) => "GitHub 更新检查请求过于频繁（HTTP 429），请稍后重试".to_string(),
             Self::Http(status) => format!("GitHub 更新检查失败（HTTP {status}）"),
             Self::Timeout => "GitHub 更新检查超时，请检查网络后重试".to_string(),
             Self::Network => "GitHub 更新检查网络连接失败，请稍后重试".to_string(),
@@ -473,23 +469,18 @@ async fn download_github_asset_with_windows(
     .map_err(|error| describe_error("GitHub API 更新任务异常", error))?
 }
 
-async fn download_with_windows(
-    app: tauri::AppHandle,
-    update: &Update,
-) -> Result<Vec<u8>, String> {
-    let bytes =
-        download_url_with_windows(app, update.download_url.to_string(), true).await?;
+async fn download_with_windows(app: tauri::AppHandle, update: &Update) -> Result<Vec<u8>, String> {
+    let bytes = download_url_with_windows(app, update.download_url.to_string(), true).await?;
     verify_update_signature(&bytes, &update.signature)?;
     Ok(bytes)
 }
 
 async fn check_with_windows(app: &tauri::AppHandle) -> Result<Option<ManualUpdate>, String> {
-    let release_bytes =
-        download_github_asset_with_windows(
-            UPDATE_RELEASE_API_URL.to_string(),
-            "application/vnd.github+json",
-        )
-        .await?;
+    let release_bytes = download_github_asset_with_windows(
+        UPDATE_RELEASE_API_URL.to_string(),
+        "application/vnd.github+json",
+    )
+    .await?;
     let release: GithubRelease = serde_json::from_slice(&release_bytes)
         .map_err(|error| describe_error("GitHub Release 响应无效", error))?;
     let manifest_asset = release
@@ -498,8 +489,7 @@ async fn check_with_windows(app: &tauri::AppHandle) -> Result<Option<ManualUpdat
         .find(|asset| asset.name == "latest.json")
         .ok_or_else(|| "最新 Release 缺少更新清单".to_string())?;
     let bytes =
-        download_github_asset_with_windows(manifest_asset.url, "application/octet-stream")
-            .await?;
+        download_github_asset_with_windows(manifest_asset.url, "application/octet-stream").await?;
     let manifest: UpdateManifest = serde_json::from_slice(&bytes)
         .map_err(|error| describe_error("Windows 更新清单无效", error))?;
     let current = semver::Version::parse(&app.package_info().version.to_string())
@@ -525,14 +515,7 @@ async fn install_with_windows(
     app: tauri::AppHandle,
     update: ManualUpdate,
 ) -> Result<String, String> {
-    emit_update_progress(
-        &app,
-        "downloading",
-        0,
-        None,
-        true,
-        "正在下载更新…",
-    );
+    emit_update_progress(&app, "downloading", 0, None, true, "正在下载更新…");
     let bytes = download_url_with_windows(app.clone(), update.url, true).await?;
     verify_update_signature(&bytes, &update.signature)?;
     let version = update.version;
@@ -614,9 +597,7 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let builtin_result = updater.check().await;
     let result = match builtin_result {
         Ok(update) => {
-            let version = update
-                .as_ref()
-                .map(|release| release.version.to_string());
+            let version = update.as_ref().map(|release| release.version.to_string());
             {
                 let state = app.state::<PendingUpdate>();
                 let mut pending = state
@@ -827,12 +808,7 @@ pub fn run() {
             let process = match spawn_daemon(app.handle(), &desktop_token) {
                 Ok(child) => Some(child),
                 Err(error) => {
-                    emit_engine_event(
-                        app.handle(),
-                        "failed",
-                        None,
-                        Some(error.clone()),
-                    );
+                    emit_engine_event(app.handle(), "failed", None, Some(error.clone()));
                     eprintln!("analysis sidecar failed to start: {error}");
                     None
                 }
