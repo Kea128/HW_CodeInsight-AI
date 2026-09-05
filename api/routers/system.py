@@ -14,6 +14,7 @@ from api.desktop_settings import (
 from api.logger import get_logger
 from api.schemas import Model, ModelConfig, Provider
 from api.services.model_discover import (
+    _gateway_error_message,
     discover_openai_models,
     resolve_api_key,
     probe_openai_chat,
@@ -137,7 +138,10 @@ async def discover_desktop_models(request: ModelEndpointRequest):
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except httpx.HTTPError as error:
-        raise HTTPException(status_code=502, detail=f"无法获取模型列表：{error}") from error
+        raise HTTPException(
+            status_code=502,
+            detail=_gateway_error_message(error, "获取模型列表"),
+        ) from error
 
 
 @router.post("/desktop/models/test")
@@ -152,7 +156,10 @@ async def test_desktop_model(request: ModelEndpointRequest):
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except httpx.HTTPError as error:
-        raise HTTPException(status_code=502, detail=f"连接测试失败：{error}") from error
+        raise HTTPException(
+            status_code=502,
+            detail=_gateway_error_message(error, "连接测试"),
+        ) from error
 
 
 @router.get("/desktop/ollama/status")

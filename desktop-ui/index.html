@@ -226,10 +226,10 @@
           <label>API 协议<input id="model-protocol" value="OpenAI Compatible" readonly /></label>
           <label>API 地址<input id="model-base-url" placeholder="https://api.deepseek.com" autocomplete="off" /></label>
           <label>模型
-            <select id="model-id">
-              <option value="">先获取模型列表</option>
-            </select>
+            <input id="model-id" list="model-id-options" placeholder="可手动填写，例如 qwen-plus" autocomplete="off" />
+            <datalist id="model-id-options"></datalist>
           </label>
+          <p class="hint">部分内网网关的 /v1/models 会 504 超时，不影响对话。可先填模型 ID 再测试连接。</p>
           <div class="row">
             <button id="discover-models-button" type="button" class="secondary">获取模型列表</button>
             <button id="test-model-button" type="button" class="secondary">测试连接</button>

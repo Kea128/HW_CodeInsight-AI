@@ -14,6 +14,9 @@ def test_normalize_openai_base_url_appends_v1():
     assert normalize_openai_base_url("https://api.deepseek.com/v1") == (
         "https://api.deepseek.com/v1"
     )
+    assert normalize_openai_base_url(
+        "[https://ai.example.com/agent/v1](https://ai.example.com/agent/v1)"
+    ) == "https://ai.example.com/agent/v1"
 
 
 @pytest.mark.asyncio
@@ -39,7 +42,7 @@ async def test_discover_openai_models_parses_ids(monkeypatch):
 
     monkeypatch.setattr(
         "api.services.model_discover.httpx.AsyncClient",
-        lambda timeout: FakeClient(),
+        lambda **_kwargs: FakeClient(),
     )
     models = await discover_openai_models("https://api.deepseek.com", "sk")
     assert [item["id"] for item in models] == ["deepseek-chat", "deepseek-reasoner"]
@@ -65,7 +68,7 @@ async def test_test_openai_chat_posts_completion(monkeypatch):
 
     monkeypatch.setattr(
         "api.services.model_discover.httpx.AsyncClient",
-        lambda timeout: FakeClient(),
+        lambda **_kwargs: FakeClient(),
     )
     result = await probe_openai_chat(
         "https://api.deepseek.com", "sk", "deepseek-chat"

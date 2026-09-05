@@ -767,15 +767,15 @@ function updateModelForm() {
 }
 
 function ensureModelOption(modelId) {
-  const select = document.querySelector("#model-id");
-  if (!modelId) return;
-  if (![...select.options].some((option) => option.value === modelId)) {
+  const input = document.querySelector("#model-id");
+  const list = document.querySelector("#model-id-options");
+  if (!modelId || !input) return;
+  if (list && ![...list.options].some((option) => option.value === modelId)) {
     const option = document.createElement("option");
     option.value = modelId;
-    option.textContent = modelId;
-    select.append(option);
+    list.append(option);
   }
-  select.value = modelId;
+  input.value = modelId;
 }
 
 async function loadModelSettings() {
@@ -1496,20 +1496,17 @@ document.querySelector("#discover-models-button").addEventListener("click", asyn
     message.textContent = "正在获取模型列表…";
     const result = await api("/desktop/models/discover", {
       method: "POST",
+      timeout: 60000,
       body: JSON.stringify({
         base_url: document.querySelector("#model-base-url").value.trim(),
         api_key: document.querySelector("#model-api-key").value.trim() || null,
       }),
     });
-    const select = document.querySelector("#model-id");
-    select.replaceChildren();
-    (result.models || []).forEach((model) => {
-      const option = document.createElement("option");
-      option.value = model.id;
-      option.textContent = model.name;
-      select.append(option);
-    });
+    const list = document.querySelector("#model-id-options");
+    if (list) list.replaceChildren();
+    (result.models || []).forEach((model) => ensureModelOption(model.id));
     if (savedModelId) ensureModelOption(savedModelId);
+    else if (result.models?.[0]) ensureModelOption(result.models[0].id);
     message.textContent = `已获取 ${result.models?.length || 0} 个模型`;
   } catch (error) {
     message.className = "message error";
@@ -1524,6 +1521,7 @@ document.querySelector("#test-model-button").addEventListener("click", async () 
     message.textContent = "正在测试连接…";
     await api("/desktop/models/test", {
       method: "POST",
+      timeout: 60000,
       body: JSON.stringify({
         base_url: document.querySelector("#model-base-url").value.trim(),
         api_key: document.querySelector("#model-api-key").value.trim() || null,
