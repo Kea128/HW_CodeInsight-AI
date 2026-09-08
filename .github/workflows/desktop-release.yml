@@ -230,7 +230,7 @@ jobs:
         with:
           tagName: desktop-v__VERSION__
           releaseName: "CodeInsight-AI Desktop v__VERSION__"
-          releaseBody: "Windows desktop release that installs NSIS updates in place instead of relaunching the old executable, shows the installed version, and frees leftover daemons on port 8001."
+          releaseBody: "Windows desktop release with visible Ubuntu sync progress, a manual Start Analysis button, remembered SSH form fields (no password), and clearer custom-API usability hints."
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true

@@ -35,7 +35,30 @@ function route(url, options = {}) {
   }
   if (path === "/wiki/tasks") return response(tasks);
   if (path === "/wiki/tasks/failed-task") return response(tasks[0]);
-  if (path === "/remote/projects") return response([]);
+  if (path === "/remote/projects") {
+    return response([{
+      id: "remote-one",
+      host: "10.39.48.26",
+      port: 22,
+      username: "gyk",
+      remote_path: "/home/WorkSpace/YinWang/br_feature_ADS_truck_0820",
+      enabled: true,
+      poll_seconds: 60,
+      host_fingerprint: "SHA256:test",
+      last_sync_at: null,
+      last_error: null,
+      stage: "syncing",
+      files_seen: 0,
+      files_excluded: 0,
+      files_oversize: 0,
+      symlinks_skipped: 0,
+      dirs_seen: 0,
+      current_path: "/home/WorkSpace/YinWang/br_feature_ADS_truck_0820",
+      progress_message: "正在列出远程目录 /home/WorkSpace/YinWang/br_feature_ADS_truck_0820",
+      sync_started_at: Date.now() - 35000,
+      progress_updated_at: Date.now() - 20000,
+    }]);
+  }
   if (path === "/continuous/projects") {
     return response([{
       id: "local-demo",
@@ -54,7 +77,15 @@ function route(url, options = {}) {
     }]);
   }
   if (path === "/desktop/settings") {
-    return response({ provider: "ollama", configured: true, ollama_tier: "balanced" });
+    return response({
+      provider: "openai_compatible",
+      configured: true,
+      usable: true,
+      hint: "自定义 API 已填写（模型 qwen-plus），但尚未测试。请点「测试连接」确认可用，否则分析可能失败。",
+      probe_status: "untested",
+      selected_model: "qwen-plus",
+      ollama_tier: "balanced",
+    });
   }
   if (path === "/desktop/ollama/status") {
     return response({ state: "ready", ready: true, selected_tier: "balanced", tiers: [] });
@@ -97,8 +128,45 @@ describe("desktop workspace UI", () => {
     provider.dispatchEvent(new Event("change", { bubbles: true }));
 
     expect(document.querySelector("#provider-state").textContent).toContain("草稿");
-    expect(document.querySelector("#provider-state").textContent).toContain("ollama");
-    expect(localStorage.getItem("codeinsight-model-provider")).toBe("ollama");
+    expect(document.querySelector("#provider-state").textContent).toContain("openai_compatible");
+    expect(localStorage.getItem("codeinsight-model-provider")).toBe("openai_compatible");
+  });
+
+  it("shows remote sync stuck step and untested AI status", async () => {
+    await boot();
+    await vi.waitFor(() => {
+      const card = document.querySelector("#remote-project-list");
+      expect(card.textContent).toContain("正在列出远程目录");
+      expect(card.textContent).toContain("已扫描 0 个文件");
+      expect(card.textContent).toContain("可能卡住");
+      expect(document.querySelector("#model-status").textContent).toContain("未测试");
+      expect(document.querySelector("#ai-usability-hint").textContent).toContain("测试连接");
+      const analyze = [...card.querySelectorAll("button")].find((button) => button.textContent === "开始分析");
+      expect(analyze).toBeTruthy();
+      expect(analyze.disabled).toBe(true);
+      expect(analyze.title).toContain("同步完成后");
+    });
+  });
+
+  it("restores ubuntu form draft without persisting a password", async () => {
+    localStorage.setItem("codeinsight-remote-draft", JSON.stringify({
+      host: "10.39.48.26",
+      port: 22,
+      username: "gyk",
+      remote_path: "/home/WorkSpace/demo",
+      poll_seconds: 90,
+      password: "should-not-be-used",
+    }));
+    await boot();
+    document.querySelector("#connect-ubuntu-button").click();
+    expect(document.querySelector("#remote-host").value).toBe("10.39.48.26");
+    expect(document.querySelector("#remote-username").value).toBe("gyk");
+    expect(document.querySelector("#remote-path").value).toBe("/home/WorkSpace/demo");
+    expect(document.querySelector("#remote-password").value).toBe("");
+    document.querySelector("#remote-host").dispatchEvent(new Event("input", { bubbles: true }));
+    const saved = JSON.parse(localStorage.getItem("codeinsight-remote-draft"));
+    expect(saved.password).toBeUndefined();
+    expect(saved.host).toBe("10.39.48.26");
   });
 
   it("supports keyboard tab selection and dialog focus return", async () => {

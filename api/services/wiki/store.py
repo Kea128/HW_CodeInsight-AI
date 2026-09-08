@@ -14,7 +14,7 @@ from api.schemas.knowledge import KnowledgeSpace
 from api.utils import deepwiki_root
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 
 def default_database_path() -> str:
@@ -58,6 +58,8 @@ class WikiTaskStore:
                 5: self._migration_5_pending_changes,
                 6: self._migration_6_retention_indexes,
                 7: self._migration_7_knowledge_spaces,
+                8: self._migration_8_remote_progress,
+                9: self._migration_9_remote_heartbeat,
             }
             for version in range(current + 1, SCHEMA_VERSION + 1):
                 migration = migrations[version]
@@ -192,6 +194,39 @@ class WikiTaskStore:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_wiki_tasks_status_updated "
             "ON wiki_tasks(status, updated_at)"
+        )
+
+    @classmethod
+    def _migration_8_remote_progress(cls, connection: sqlite3.Connection) -> None:
+        existing = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='remote_projects'"
+        ).fetchone()
+        if not existing:
+            return
+        cls._add_columns(
+            connection,
+            "remote_projects",
+            {
+                "dirs_seen": "INTEGER NOT NULL DEFAULT 0",
+                "current_path": "TEXT",
+                "progress_message": "TEXT",
+                "sync_started_at": "INTEGER",
+            },
+        )
+
+    @classmethod
+    def _migration_9_remote_heartbeat(cls, connection: sqlite3.Connection) -> None:
+        existing = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='remote_projects'"
+        ).fetchone()
+        if not existing:
+            return
+        cls._add_columns(
+            connection,
+            "remote_projects",
+            {"progress_updated_at": "INTEGER"},
         )
 
     @staticmethod
@@ -410,8 +445,9 @@ class WikiTaskStore:
                     credential_id, provider, model, language, host_fingerprint,
                     enabled, poll_seconds, last_sync_at, last_error, stage,
                     files_seen, files_excluded, files_oversize, symlinks_skipped,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    dirs_seen, current_path, progress_message, sync_started_at,
+                    progress_updated_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     host=excluded.host,
                     port=excluded.port,
@@ -432,6 +468,11 @@ class WikiTaskStore:
                     files_excluded=excluded.files_excluded,
                     files_oversize=excluded.files_oversize,
                     symlinks_skipped=excluded.symlinks_skipped,
+                    dirs_seen=excluded.dirs_seen,
+                    current_path=excluded.current_path,
+                    progress_message=excluded.progress_message,
+                    sync_started_at=excluded.sync_started_at,
+                    progress_updated_at=excluded.progress_updated_at,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -455,6 +496,11 @@ class WikiTaskStore:
                     project.get("files_excluded", 0),
                     project.get("files_oversize", 0),
                     project.get("symlinks_skipped", 0),
+                    project.get("dirs_seen", 0),
+                    project.get("current_path"),
+                    project.get("progress_message"),
+                    project.get("sync_started_at"),
+                    project.get("progress_updated_at"),
                     now,
                 ),
             )
@@ -503,6 +549,19 @@ class WikiTaskStore:
             "files_excluded": row["files_excluded"],
             "files_oversize": row["files_oversize"],
             "symlinks_skipped": row["symlinks_skipped"],
+            "dirs_seen": row["dirs_seen"] if "dirs_seen" in row.keys() else 0,
+            "current_path": row["current_path"] if "current_path" in row.keys() else None,
+            "progress_message": (
+                row["progress_message"] if "progress_message" in row.keys() else None
+            ),
+            "sync_started_at": (
+                row["sync_started_at"] if "sync_started_at" in row.keys() else None
+            ),
+            "progress_updated_at": (
+                row["progress_updated_at"]
+                if "progress_updated_at" in row.keys()
+                else None
+            ),
         }
 
     @staticmethod

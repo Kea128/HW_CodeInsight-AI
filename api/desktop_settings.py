@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -138,9 +139,95 @@ def save_desktop_settings(
         data["max_concurrent_wiki_tasks"] = str(
             max(1, min(16, int(max_concurrent_wiki_tasks)))
         )
+    for key in (
+        "last_probe_ok",
+        "last_probe_message",
+        "last_probe_at",
+        "last_probe_model",
+    ):
+        data.pop(key, None)
 
     _write_settings_file(data)
     return load_desktop_settings()
+
+
+def record_model_probe(
+    *, ok: bool, message: str, model: str | None = None
+) -> None:
+    data = _read_settings_file()
+    data["last_probe_ok"] = "1" if ok else "0"
+    data["last_probe_message"] = (message or "")[:400]
+    data["last_probe_at"] = str(int(time.time() * 1000))
+    if model is not None:
+        data["last_probe_model"] = model
+    _write_settings_file(data)
+
+
+def infer_probe_status(data: dict[str, str]) -> str:
+    if data.get("last_probe_ok") not in {"0", "1"}:
+        return "untested"
+    selected = data.get("selected_model") or ""
+    probed = data.get("last_probe_model") or ""
+    if selected and probed and selected != probed:
+        return "untested"
+    return "ok" if data.get("last_probe_ok") == "1" else "failed"
+
+
+def is_provider_configured(data: dict[str, str], ollama_status: dict) -> bool:
+    provider = data.get("provider", "openai")
+    if provider == "ollama":
+        return bool(ollama_status.get("ready"))
+    if not data.get(f"{provider}_api_key"):
+        return False
+    if provider == "openai_compatible":
+        return bool(data.get("base_url") and data.get("selected_model"))
+    return True
+
+
+def desktop_ai_hint(
+    data: dict[str, str],
+    *,
+    configured: bool,
+    ollama_status: dict,
+    probe_status: str,
+) -> str:
+    provider = data.get("provider", "openai")
+    labels = {
+        "openai": "OpenAI",
+        "google": "Google Gemini",
+        "ollama": "本机 Ollama",
+        "openai_compatible": "自定义 OpenAI 兼容接口",
+    }
+    name = labels.get(provider, provider)
+    if provider == "ollama":
+        if configured:
+            return f"{name} 可用，同步完成后会自动分析。"
+        return str(
+            ollama_status.get("message") or f"{name} 未就绪，同步完成后不会自动分析。"
+        )
+    if provider == "openai_compatible":
+        if not data.get("base_url"):
+            return "自定义 API 未填写地址，无法开始分析。"
+        if not data.get("openai_compatible_api_key"):
+            return "自定义 API 未填写密钥，无法开始分析。"
+        if not data.get("selected_model"):
+            return "自定义 API 未填写模型 ID，无法开始分析。请填写模型 ID 后点「测试连接」。"
+        if probe_status == "failed":
+            detail = data.get("last_probe_message") or "未知错误"
+            return f"自定义 API 最近测试失败：{detail}。分析不会自动开始。"
+        if probe_status == "ok":
+            return f"自定义 API 可用（模型 {data.get('selected_model')}），同步完成后会自动分析。"
+        return (
+            f"自定义 API 已填写（模型 {data.get('selected_model')}），但尚未测试。"
+            "请点「测试连接」确认可用，否则分析可能失败。"
+        )
+    if not configured:
+        return f"{name} 未填写 API Key，无法开始分析。"
+    if probe_status == "failed":
+        return f"{name} 最近测试失败，分析可能无法开始。"
+    if probe_status == "ok":
+        return f"{name} 可用，同步完成后会自动分析。"
+    return f"{name} 已配置。建议先测试连接；同步完成后会自动分析。"
 
 
 def selected_ollama_model() -> str | None:

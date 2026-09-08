@@ -163,6 +163,9 @@ main {
 .empty-state { padding: 18px 8px; text-align: center; }
 .empty-state .hint { margin-top: 4px; }
 .notice { margin: 12px 0; padding: 10px 12px; border: 1px solid #315a83; border-radius: var(--radius-sm); color: #bfe8ff; background: rgba(31, 83, 132, .25); font-size: var(--fs-aux); }
+.notice.warn { border-color: #8a6a2f; color: #ffe6b0; background: rgba(138, 106, 47, .22); }
+.notice.danger { border-color: #8a3a3a; color: #ffd0d0; background: rgba(138, 58, 58, .22); }
+.stuck-hint { color: var(--warn); }
 .message.error, .remote-error, .task-error { color: var(--danger) !important; }
 
 button {
@@ -264,6 +267,11 @@ button.continuous-project:hover:not(:disabled) { background: #162033; }
 .flow-steps li.done { border-color: #39765b; color: #8aefba; }
 .progress { height: 4px; margin-top: 8px; overflow: hidden; border-radius: 9px; background: #202a39; }
 .progress span { display: block; height: 100%; background: var(--accent); }
+.progress.live span { animation: progress-pulse 1.2s ease-in-out infinite; }
+@keyframes progress-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .4; }
+}
 .install-progress { height: 6px; overflow: hidden; border-radius: 9px; background: #202a39; }
 .install-progress span { display: block; width: 0; height: 100%; background: linear-gradient(90deg, #58c9fa, #7aabff); transition: width .25s ease; }
 

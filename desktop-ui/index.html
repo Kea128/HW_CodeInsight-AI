@@ -185,7 +185,7 @@
           <li data-stage="sync">同步代码</li>
           <li data-stage="analysis">AI 分析</li>
         </ol>
-        <p id="remote-ai-notice" class="notice" hidden>可以先连接并同步 Ubuntu；AI 就绪后会自动开始分析。</p>
+        <p id="remote-ai-notice" class="notice">同步完成后请点卡片上的「开始分析」。密码只保存在 Windows 凭据管理器。</p>
         <form id="remote-form">
           <div class="row">
             <label>服务器 IP<input id="remote-host" required placeholder="192.168.1.100" autocomplete="off" /></label>
@@ -200,7 +200,7 @@
             <summary>同步选项</summary>
             <label>自动同步间隔（秒）<input id="remote-poll-seconds" type="number" min="10" max="3600" value="60" required /></label>
           </details>
-          <button type="submit">连接并开始分析</button>
+          <button type="submit">连接并同步</button>
         </form>
         <p id="remote-message" class="message"></p>
       </div>
@@ -222,6 +222,7 @@
           </select>
         </label>
         <p id="provider-state" class="hint"></p>
+        <p id="ai-usability-hint" class="hint"></p>
         <div id="compatible-fields">
           <label>API 协议<input id="model-protocol" value="OpenAI Compatible" readonly /></label>
           <label>API 地址<input id="model-base-url" placeholder="https://api.deepseek.com" autocomplete="off" /></label>

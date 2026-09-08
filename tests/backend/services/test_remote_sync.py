@@ -165,6 +165,23 @@ def test_mirror_directory_updates_and_deletes_without_following_links(tmp_path):
     assert result.files_excluded >= 3
 
 
+def test_mirror_emits_live_progress_before_finishing(tmp_path):
+    updates = []
+
+    result = _mirror_directory(
+        FakeSftp(),
+        "/srv/code",
+        tmp_path / "mirror",
+        on_progress=lambda item: updates.append(item.as_stats()),
+    )
+
+    assert updates
+    assert (updates[0]["progress_message"] or "").startswith("正在列出远程目录")
+    assert any(item["files_seen"] > 0 for item in updates)
+    assert result.dirs_seen >= 2
+    assert result.progress_message.startswith("同步完成")
+
+
 def test_mirror_detects_same_size_same_mtime_content_change(tmp_path):
     sftp = FakeSftp()
     mirror = tmp_path / "mirror"
@@ -258,7 +275,7 @@ async def test_create_stores_password_only_in_credentials(monkeypatch, tmp_path)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr(
         "api.services.remote._sync_project",
-        lambda project, password, known_hosts, cancel_event=None: (
+        lambda project, password, known_hosts, cancel_event=None, on_progress=None: (
             MirrorResult(files_seen=2, changed=True),
             "SHA256:test",
         ),
@@ -285,7 +302,8 @@ async def test_create_stores_password_only_in_credentials(monkeypatch, tmp_path)
     assert credentials.values[project["credential_id"]] == "server-secret"
     assert "password" not in project
     assert "credential_id" not in status
-    assert continuous.requests[0][0].repo_url == project["local_path"]
+    assert continuous.requests == []
+    assert project["stage"] == "ready_for_analysis"
 
 
 @pytest.mark.asyncio
@@ -293,7 +311,7 @@ async def test_first_sync_without_ai_stays_ready_for_analysis(monkeypatch, tmp_p
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr(
         "api.services.remote._sync_project",
-        lambda project, password, known_hosts, cancel_event=None: (
+        lambda project, password, known_hosts, cancel_event=None, on_progress=None: (
             MirrorResult(files_seen=2, changed=True),
             "SHA256:test",
         ),
@@ -371,7 +389,7 @@ async def test_concurrent_manual_sync_only_starts_one_task(tmp_path):
 async def test_background_analysis_failure_keeps_project_retryable(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
 
-    def sync(project, password, known_hosts, cancel_event=None):
+    def sync(project, password, known_hosts, cancel_event=None, on_progress=None):
         mirror = Path(project["local_path"])
         mirror.mkdir(parents=True)
         (mirror / "source.py").write_text("print('new')", encoding="utf-8")
@@ -392,6 +410,7 @@ async def test_background_analysis_failure_keeps_project_retryable(monkeypatch, 
             remote_path="/srv/code/demo",
             provider="ollama",
             host_fingerprint="SHA256:test",
+            analyze_now=True,
         )
     )
     await manager._active[status["id"]]
@@ -474,3 +493,81 @@ def test_project_listing_is_read_only_and_background_reconciles_analysis(tmp_pat
     manager._reconcile_analysis_stages()
 
     assert store.remote_projects["remote-one"]["stage"] == "ready_for_analysis"
+
+
+@pytest.mark.asyncio
+async def test_sync_persists_live_progress_before_completion(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    store = FakeStore()
+    seen = []
+
+    def sync(project, password, known_hosts, cancel_event=None, on_progress=None):
+        result = MirrorResult(
+            files_seen=3,
+            dirs_seen=2,
+            current_path="/srv/code/src",
+            progress_message="正在列出远程目录 /srv/code/src",
+        )
+        if on_progress:
+            on_progress(result)
+            seen.append(store.remote_projects[project["id"]]["files_seen"])
+        return result, "SHA256:test"
+
+    monkeypatch.setattr("api.services.remote._sync_project", sync)
+    manager = RemoteSyncManager(
+        FakeContinuous(), store=store, credentials=FakeCredentials()
+    )
+    status = await manager.create(
+        RemoteProjectRequest(
+            host="10.0.0.8",
+            username="ubuntu",
+            password="server-secret",
+            remote_path="/srv/code/demo",
+            host_fingerprint="SHA256:test",
+            analyze_now=False,
+        )
+    )
+    await manager._active[status["id"]]
+
+    assert seen == [3]
+    project = store.remote_projects[status["id"]]
+    assert project["progress_updated_at"]
+    assert project["progress_message"].startswith("同步完成") or project[
+        "files_seen"
+    ] == 3
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_openai_compatible_and_uses_model(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(
+        "api.services.remote._sync_project",
+        lambda project, password, known_hosts, cancel_event=None, on_progress=None: (
+            MirrorResult(files_seen=1, changed=True),
+            "SHA256:test",
+        ),
+    )
+    continuous = FakeContinuous()
+    manager = RemoteSyncManager(
+        continuous, store=FakeStore(), credentials=FakeCredentials()
+    )
+
+    status = await manager.create(
+        RemoteProjectRequest(
+            host="10.0.0.8",
+            username="ubuntu",
+            password="server-secret",
+            remote_path="/srv/code/demo",
+            provider="openai_compatible",
+            model="qwen-plus",
+            host_fingerprint="SHA256:test",
+            analyze_now=True,
+        )
+    )
+    await manager._active[status["id"]]
+
+    request = continuous.requests[0][0]
+    assert request.provider == "openai_compatible"
+    assert request.model == "qwen-plus"

@@ -8,7 +8,11 @@ from api.config import configs
 from api.desktop_settings import (
     CredentialStorageUnavailable,
     apply_desktop_settings,
+    desktop_ai_hint,
+    infer_probe_status,
+    is_provider_configured,
     load_desktop_settings,
+    record_model_probe,
     save_desktop_settings,
 )
 from api.logger import get_logger
@@ -39,6 +43,10 @@ class DesktopSettingsRequest(BaseModel):
 class DesktopSettingsStatus(BaseModel):
     provider: str
     configured: bool
+    usable: bool = False
+    hint: str = ""
+    probe_status: Literal["untested", "ok", "failed"] = "untested"
+    probe_message: str | None = None
     restart_required: bool = False
     ollama_tier: str = "auto"
     ollama_model: str | None = None
@@ -69,15 +77,23 @@ def _desktop_settings_status(
 ) -> DesktopSettingsStatus:
     provider = data.get("provider", "openai")
     ollama_status = installer.status() if provider == "ollama" else {}
-    configured = (
-        bool(ollama_status.get("ready"))
-        if provider == "ollama"
-        else bool(data.get(f"{provider}_api_key"))
-        and (provider != "openai_compatible" or bool(data.get("base_url")))
-    )
+    configured = is_provider_configured(data, ollama_status)
+    probe_status = infer_probe_status(data)
+    if probe_status not in {"untested", "ok", "failed"}:
+        probe_status = "untested"
+    usable = configured and probe_status != "failed"
     return DesktopSettingsStatus(
         provider=provider,
         configured=configured,
+        usable=usable,
+        hint=desktop_ai_hint(
+            data,
+            configured=configured,
+            ollama_status=ollama_status,
+            probe_status=probe_status,
+        ),
+        probe_status=probe_status,
+        probe_message=data.get("last_probe_message"),
         restart_required=restart_required,
         ollama_tier=data.get("ollama_tier", "auto"),
         ollama_model=data.get("ollama_model"),
@@ -148,18 +164,31 @@ async def discover_desktop_models(request: ModelEndpointRequest):
 async def test_desktop_model(request: ModelEndpointRequest):
     try:
         api_key = resolve_api_key(request.provider, request.api_key)
-        return await probe_openai_chat(
+        result = await probe_openai_chat(
             request.base_url, api_key, request.model or ""
         )
+        _remember_probe(ok=True, message="连接成功", model=request.model)
+        return result
     except CredentialStorageUnavailable as error:
+        _remember_probe(ok=False, message=str(error), model=request.model)
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ValueError as error:
+        _remember_probe(ok=False, message=str(error), model=request.model)
         raise HTTPException(status_code=400, detail=str(error)) from error
     except httpx.HTTPError as error:
+        message = _gateway_error_message(error, "连接测试")
+        _remember_probe(ok=False, message=message, model=request.model)
         raise HTTPException(
             status_code=502,
-            detail=_gateway_error_message(error, "连接测试"),
+            detail=message,
         ) from error
+
+
+def _remember_probe(*, ok: bool, message: str, model: str | None) -> None:
+    try:
+        record_model_probe(ok=ok, message=message, model=model)
+    except Exception:
+        logger.exception("Failed to persist model probe result")
 
 
 @router.get("/desktop/ollama/status")

@@ -6,9 +6,14 @@ let tasksLoading = false;
 let remoteProjectsLoading = false;
 let continuousProjectsLoading = false;
 let modelConfigured = false;
+let modelUsable = false;
+let modelHint = "";
+let modelProbeStatus = "untested";
 let savedModelProvider = localStorage.getItem("codeinsight-model-provider") || "openai";
 let modelProvider = savedModelProvider;
 let savedModelId = localStorage.getItem("codeinsight-model-id") || "";
+let latestRemoteProjects = [];
+let remoteWatchTimer = null;
 let latestKnowledgeSpaces = [];
 let activeSpaceId = localStorage.getItem("codeinsight-active-space") || "";
 let resultTab = "docs";
@@ -132,11 +137,92 @@ function focusableElements(container) {
 
 function updateSetupBanner() {
   document.querySelector("#setup-banner").hidden = modelConfigured || engineState !== "ready";
-  document.querySelector("#remote-ai-notice").hidden = modelConfigured;
+  const notice = document.querySelector("#remote-ai-notice");
+  const manualHint = "同步完成后请点卡片上的「开始分析」。密码只保存在 Windows 凭据管理器。";
+  notice.textContent = modelHint ? `${modelHint} ${manualHint}` : manualHint;
+  notice.hidden = engineState !== "ready";
+  notice.className = modelProbeStatus === "failed" || !modelConfigured
+    ? "notice danger"
+    : modelProbeStatus === "untested"
+      ? "notice warn"
+      : "notice";
+  const usability = document.querySelector("#ai-usability-hint");
+  if (usability) usability.textContent = modelHint;
 }
 
 function remoteFormDirty() {
   return remoteFormEdited;
+}
+
+const REMOTE_DRAFT_KEY = "codeinsight-remote-draft";
+const REMOTE_FINGERPRINT_KEY = "codeinsight-remote-fingerprint";
+
+function readRemoteDraft() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(REMOTE_DRAFT_KEY) || "null");
+    if (!parsed || typeof parsed !== "object") return null;
+    const { password: _ignored, ...safe } = parsed;
+    return safe;
+  } catch {
+    return null;
+  }
+}
+
+function writeRemoteDraft() {
+  const draft = {
+    host: document.querySelector("#remote-host").value.trim(),
+    port: Number(document.querySelector("#remote-port").value) || 22,
+    username: document.querySelector("#remote-username").value.trim(),
+    remote_path: document.querySelector("#remote-path").value.trim(),
+    poll_seconds: Number(document.querySelector("#remote-poll-seconds").value) || 60,
+  };
+  localStorage.setItem(REMOTE_DRAFT_KEY, JSON.stringify(draft));
+}
+
+function rememberRemoteFingerprint(key, value) {
+  confirmedRemoteFingerprint = { key, value };
+  localStorage.setItem(REMOTE_FINGERPRINT_KEY, JSON.stringify({ key, value }));
+}
+
+function fingerprintForForm(host, port) {
+  const key = `${host}:${port}`;
+  if (confirmedRemoteFingerprint?.key === key && confirmedRemoteFingerprint.value) {
+    return confirmedRemoteFingerprint;
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(REMOTE_FINGERPRINT_KEY) || "null");
+    if (saved?.key === key && saved.value) return saved;
+  } catch {
+    /* ignore broken fingerprint cache */
+  }
+  const known = latestRemoteProjects.find(
+    (project) => project.host === host && Number(project.port) === Number(port) && project.host_fingerprint,
+  );
+  return known ? { key, value: known.host_fingerprint } : null;
+}
+
+function restoreRemoteDraft(projects = latestRemoteProjects) {
+  if (remoteFormEdited) return;
+  const fallback = projects[0]
+    ? {
+      host: projects[0].host,
+      port: projects[0].port,
+      username: projects[0].username,
+      remote_path: projects[0].remote_path,
+      poll_seconds: projects[0].poll_seconds,
+    }
+    : null;
+  const draft = readRemoteDraft() || fallback;
+  if (!draft) return;
+  if (draft.host) document.querySelector("#remote-host").value = draft.host;
+  if (draft.port) document.querySelector("#remote-port").value = draft.port;
+  if (draft.username) document.querySelector("#remote-username").value = draft.username;
+  if (draft.remote_path) document.querySelector("#remote-path").value = draft.remote_path;
+  if (draft.poll_seconds) document.querySelector("#remote-poll-seconds").value = draft.poll_seconds;
+  confirmedRemoteFingerprint = fingerprintForForm(
+    document.querySelector("#remote-host").value.trim(),
+    Number(document.querySelector("#remote-port").value),
+  );
 }
 
 async function api(path, options = {}) {
@@ -379,12 +465,68 @@ function taskStatusKind(status) {
 function taskStatusLabel(status) {
   return {
     pending: "排队中",
+    waiting: "等待中",
     running: "运行中",
+    indexing: "建立索引",
+    determining_structure: "规划文档结构",
+    generating: "生成文档",
     paused: "已暂停",
     completed: "已完成",
     failed: "失败",
     cancelled: "已取消",
   }[status] || status;
+}
+
+function formatElapsed(startedAt) {
+  if (!startedAt) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  if (seconds < 60) return `已用 ${seconds} 秒`;
+  return `已用 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+function formatHeartbeat(updatedAt) {
+  if (!updatedAt) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - updatedAt) / 1000));
+  if (seconds < 2) return "进度刚刚更新";
+  return `进度更新于 ${seconds} 秒前`;
+}
+
+function remoteProgressText(project) {
+  const busy = ["connecting", "syncing", "analyzing"].includes(project.stage);
+  const parts = [];
+  if (project.progress_message) parts.push(project.progress_message);
+  else if (project.stage === "syncing") parts.push("正在同步，等待首个目录列表…");
+  if (project.current_path && !String(project.progress_message || "").includes(project.current_path)) {
+    parts.push(project.current_path);
+  }
+  if (project.stage === "analyzing") {
+    if (project.analysis_status) {
+      parts.push(`${taskStatusLabel(project.analysis_status)} · ${project.analysis_pages_done || 0}/${project.analysis_pages_total || "?"} 页`);
+    } else if (!project.progress_message) {
+      parts.push("正在启动分析任务…");
+    }
+  }
+  if (["ready_for_analysis", "failed"].includes(project.stage) && !modelConfigured) {
+    parts.push(modelHint || "AI 未配置，请先配置后再点「开始分析」。");
+  }
+  const updatedAt = project.progress_updated_at || project.sync_started_at;
+  const heartbeat = formatHeartbeat(updatedAt);
+  const stale = busy && updatedAt && Date.now() - updatedAt > 15000;
+  if (stale) parts.push(`${heartbeat}。可能卡住，可取消后重试。`);
+  else if (heartbeat && busy) parts.push(heartbeat);
+  return parts.filter(Boolean).join(" · ");
+}
+
+function watchRemoteProgress(projects) {
+  const busy = projects.some((project) => ["connecting", "syncing", "analyzing"].includes(project.stage));
+  if (busy && !remoteWatchTimer) {
+    remoteWatchTimer = setInterval(() => {
+      loadRemoteProjects().catch(() => {});
+    }, 2000);
+  } else if (!busy && remoteWatchTimer) {
+    clearInterval(remoteWatchTimer);
+    remoteWatchTimer = null;
+  }
 }
 
 function renderEmptyState(container, title, hint) {
@@ -631,8 +773,27 @@ function renderRemoteProject(project) {
   const flow = document.createElement("p");
   flow.className = "meta";
   flow.textContent = projectFlow[project.stage] || projectFlow.saved;
+  const counts = document.createElement("p");
+  counts.className = "meta";
+  const elapsed = ["connecting", "syncing", "analyzing"].includes(project.stage)
+    ? formatElapsed(project.sync_started_at)
+    : "";
+  counts.textContent = [
+    `已扫描 ${project.files_seen || 0} 个文件`,
+    `${project.dirs_seen || 0} 个目录`,
+    elapsed,
+  ].filter(Boolean).join(" · ");
+  const progressLine = document.createElement("p");
+  const progressText = remoteProgressText(project);
+  const updatedAt = project.progress_updated_at || project.sync_started_at;
+  const stale = ["connecting", "syncing"].includes(project.stage)
+    && updatedAt
+    && Date.now() - updatedAt > 15000;
+  progressLine.className = stale ? "meta stuck-hint" : "meta";
+  progressLine.textContent = progressText;
   const extras = document.createElement("details");
   extras.className = "card-extras";
+  extras.open = ["connecting", "syncing", "analyzing", "failed"].includes(project.stage);
   const summary = document.createElement("summary");
   summary.textContent = "连接与同步详情";
   const fingerprint = document.createElement("p");
@@ -642,12 +803,32 @@ function renderRemoteProject(project) {
     : "服务器指纹：等待首次连接";
   const syncStats = document.createElement("p");
   syncStats.className = "fingerprint";
-  syncStats.textContent = `已扫描 ${project.files_seen || 0} 个文件 · 排除 ${project.files_excluded || 0} · 超大 ${project.files_oversize || 0} · 跳过链接 ${project.symlinks_skipped || 0}`;
+  syncStats.textContent = `排除 ${project.files_excluded || 0} · 超大 ${project.files_oversize || 0} · 跳过链接 ${project.symlinks_skipped || 0}`;
   extras.append(summary, fingerprint, syncStats);
-  detail.append(title, status, flow, extras);
+  detail.append(title, status, flow, counts);
+  if (progressLine.textContent) detail.append(progressLine);
+  if (["connecting", "syncing", "analyzing"].includes(project.stage)) {
+    const progress = document.createElement("div");
+    progress.className = "progress live";
+    const bar = document.createElement("span");
+    let percent = 8;
+    if (project.stage === "syncing") {
+      percent = Math.min(90, 8 + (project.files_seen || 0) * 2 + (project.dirs_seen || 0));
+    } else if (project.stage === "analyzing" && project.analysis_pages_total) {
+      percent = Math.min(100, (project.analysis_pages_done / project.analysis_pages_total) * 100);
+    } else if (project.stage === "analyzing") {
+      percent = 20;
+    }
+    bar.style.width = `${percent}%`;
+    progress.append(bar);
+    detail.append(progress);
+  }
+  detail.append(extras);
 
   const actions = document.createElement("div");
   actions.className = "task-actions";
+  const busy = ["connecting", "syncing", "analyzing"].includes(project.stage);
+  const hasCopy = (project.files_seen || 0) > 0 || ["ready_for_analysis", "analyzing"].includes(project.stage);
   const terminalButton = remoteActionButton("打开终端", () => {
     window.dispatchEvent(
       new CustomEvent("codeinsight:open-terminal", { detail: project }),
@@ -667,26 +848,42 @@ function renderRemoteProject(project) {
       syncButton.disabled = false;
     }
   });
-  const operationButton = project.stage === "failed"
+  const analyzeButton = remoteActionButton("开始分析", async () => {
+    if (!modelConfigured || modelProbeStatus === "failed") {
+      openDrawer("settings-drawer");
+      return;
+    }
+    await api(`/remote/projects/${encodeURIComponent(project.id)}/analyze`, { method: "POST" });
+    await loadRemoteProjects();
+  });
+  if (project.stage === "analyzing") {
+    analyzeButton.disabled = true;
+    analyzeButton.title = "正在分析…";
+  } else if (busy) {
+    analyzeButton.disabled = true;
+    analyzeButton.title = "同步完成后可开始";
+  } else if (!hasCopy) {
+    analyzeButton.disabled = true;
+    analyzeButton.title = "请先完成同步";
+  } else if (!modelConfigured) {
+    analyzeButton.title = "请先配置 AI";
+  } else if (modelProbeStatus === "failed") {
+    analyzeButton.title = "AI 最近测试失败";
+  } else {
+    analyzeButton.title = "开始生成知识库";
+  }
+  const retryButton = project.stage === "failed"
     ? remoteActionButton("重试", async () => {
       await api(`/remote/projects/${encodeURIComponent(project.id)}/retry`, { method: "POST" });
       await loadRemoteProjects();
     })
-    : project.stage === "ready_for_analysis"
-      ? remoteActionButton("开始 AI 分析", async () => {
-        if (!modelConfigured) {
-          openDrawer("settings-drawer");
-          return;
-        }
-        await api(`/remote/projects/${encodeURIComponent(project.id)}/analyze`, { method: "POST" });
-        await loadRemoteProjects();
-      })
-      : ["connecting", "syncing", "analyzing"].includes(project.stage)
-        ? remoteActionButton("取消", async () => {
-          await api(`/remote/projects/${encodeURIComponent(project.id)}/cancel`, { method: "POST" });
-          await loadRemoteProjects();
-        }, "danger")
-        : null;
+    : null;
+  const cancelButton = busy
+    ? remoteActionButton("取消", async () => {
+      await api(`/remote/projects/${encodeURIComponent(project.id)}/cancel`, { method: "POST" });
+      await loadRemoteProjects();
+    }, "danger")
+    : null;
   const deleteButton = remoteActionButton(
     "删除",
     async () => {
@@ -707,8 +904,9 @@ function renderRemoteProject(project) {
     },
     "danger",
   );
-  actions.append(terminalButton, syncButton);
-  if (operationButton) actions.append(operationButton);
+  actions.append(terminalButton, syncButton, analyzeButton);
+  if (retryButton) actions.append(retryButton);
+  if (cancelButton) actions.append(cancelButton);
   actions.append(deleteButton);
   card.append(detail, actions);
   return card;
@@ -723,6 +921,9 @@ async function loadRemoteProjects() {
     const projects = await api("/remote/projects");
     const placeholder = document.querySelector("#terminal-placeholder");
     if (placeholder) placeholder.hidden = projects.length > 0;
+    latestRemoteProjects = projects;
+    restoreRemoteDraft(projects);
+    watchRemoteProgress(projects);
     if (!projects.length) {
       renderEmptyState(list, "尚未连接 Ubuntu 项目。", "通过顶部「连接 Ubuntu」添加远程目录。");
     } else {
@@ -804,6 +1005,9 @@ async function loadModelSettings() {
       modelProvider = savedModelProvider;
     }
     modelConfigured = settings.configured;
+    modelUsable = settings.usable !== false && settings.configured;
+    modelHint = settings.hint || "";
+    modelProbeStatus = settings.probe_status || "untested";
     if (settings.base_url) {
       document.querySelector("#model-base-url").value = settings.base_url;
     }
@@ -825,8 +1029,20 @@ async function loadModelSettings() {
     localStorage.setItem("codeinsight-model-provider", savedModelProvider);
     localStorage.setItem("codeinsight-ollama-tier", tier);
     updateModelForm();
-    status.textContent = modelConfigured ? "AI 已就绪" : "AI 需要配置";
-    status.className = `badge ${modelConfigured ? "ready" : "failed"}`;
+    if (!modelConfigured) {
+      status.textContent = "AI 需要配置";
+      status.className = "badge failed";
+    } else if (modelProbeStatus === "failed") {
+      status.textContent = "AI 不可用";
+      status.className = "badge failed";
+    } else if (modelProbeStatus === "ok") {
+      status.textContent = "AI 可用";
+      status.className = "badge ready";
+    } else {
+      status.textContent = "AI 已配置（未测试）";
+      status.className = "badge waiting";
+    }
+    status.title = modelHint || "";
     updateSetupBanner();
   } catch (error) {
     status.textContent = "读取失败";
@@ -1009,12 +1225,13 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
     remote_path: document.querySelector("#remote-path").value.trim(),
     poll_seconds: Number(document.querySelector("#remote-poll-seconds").value),
     provider: savedModelProvider,
+    model: savedModelId || null,
     language: "zh",
   };
   try {
     message.className = "message";
-    const fingerprintKey = `${body.host}:${body.port}`;
-    if (confirmedRemoteFingerprint?.key !== fingerprintKey) {
+    const remembered = fingerprintForForm(body.host, body.port);
+    if (!remembered) {
       setRemoteFlow("fingerprint");
       message.textContent = "正在读取服务器主机指纹（尚未发送用户名和密码）…";
       const probe = await api("/remote/fingerprint", {
@@ -1025,10 +1242,12 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
         `首次连接需要确认 Ubuntu 主机身份：\n\n${probe.algorithm}\n${probe.fingerprint}\n\n请与服务器管理员核对。确认信任并继续吗？`,
       );
       if (!approved) throw new Error("已取消：未确认服务器主机指纹");
-      confirmedRemoteFingerprint = { key: fingerprintKey, value: probe.fingerprint };
+      rememberRemoteFingerprint(`${body.host}:${body.port}`, probe.fingerprint);
+    } else {
+      rememberRemoteFingerprint(remembered.key, remembered.value);
     }
     body.host_fingerprint = confirmedRemoteFingerprint.value;
-    body.analyze_now = modelConfigured;
+    body.analyze_now = false;
     setRemoteFlow("connect");
     message.textContent = "指纹已确认，正在安全连接 Ubuntu…";
     await api("/remote/projects", {
@@ -1036,11 +1255,10 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
       body: JSON.stringify(body),
     });
     passwordInput.value = "";
+    writeRemoteDraft();
     remoteFormEdited = false;
     setRemoteFlow("sync");
-    message.textContent = modelConfigured
-      ? "远程项目已保存，正在后台同步；完成后自动分析。"
-      : "远程项目已保存，正在后台同步；AI 就绪后可开始分析。";
+    message.textContent = "远程项目已保存，正在后台同步。完成后请在卡片上点「开始分析」。";
     await refreshWorkspace();
     closeDrawers();
   } catch (error) {
@@ -1050,6 +1268,7 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
 });
 document.querySelector("#remote-form").addEventListener("input", () => {
   remoteFormEdited = true;
+  writeRemoteDraft();
   setRemoteFlow("fingerprint");
 });
 
@@ -1125,6 +1344,7 @@ document.querySelector("#terminal-open-project-button").addEventListener("click"
 });
 document.querySelector("#connect-ubuntu-button").addEventListener("click", () => {
   selectWorkspaceSource(true);
+  restoreRemoteDraft();
   openDrawer("project-drawer");
   selectSource(true);
 });
@@ -1164,7 +1384,10 @@ function selectSource(remote) {
   document.querySelector("#source-local-panel").hidden = remote;
   document.querySelector("#source-remote-panel").hidden = !remote;
   localStorage.setItem("codeinsight-source-tab", remote ? "remote" : "local");
-  if (remote) requestAnimationFrame(() => document.querySelector("#remote-host").focus());
+  if (remote) {
+    restoreRemoteDraft();
+    requestAnimationFrame(() => document.querySelector("#remote-host").focus());
+  }
 }
 
 document.querySelector("#source-local-tab").addEventListener("click", () => selectSource(false));
@@ -1544,10 +1767,13 @@ document.querySelector("#test-model-button").addEventListener("click", async () 
         model: document.querySelector("#model-id").value.trim(),
       }),
     });
-    message.textContent = "连接成功";
+    message.className = "message";
+    message.textContent = "连接成功，此 API 可以用于分析。";
+    await loadModelSettings();
   } catch (error) {
     message.className = "message error";
-    message.textContent = errorMessage(error);
+    message.textContent = `${errorMessage(error)}。此 API 当前不能用于分析。`;
+    await loadModelSettings();
   }
 });
 
@@ -1615,6 +1841,7 @@ document.querySelector("#ollama-tier").value =
   localStorage.getItem("codeinsight-ollama-tier") || "auto";
 selectWorkspaceSource(localStorage.getItem("codeinsight-workspace-source") === "remote");
 updateModelForm();
+restoreRemoteDraft();
 initializeUpdateProgress();
 initializeEngineDiagnostics().finally(waitForEngine);
 setInterval(refreshWorkspace, 4000);

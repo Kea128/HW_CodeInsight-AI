@@ -72,6 +72,11 @@ def test_remote_project_round_trip_never_contains_password(tmp_path):
         "poll_seconds": 60,
         "last_sync_at": 123,
         "last_error": None,
+        "dirs_seen": 4,
+        "current_path": "/srv/code/src",
+        "progress_message": "正在列出远程目录 /srv/code/src",
+        "sync_started_at": 456,
+        "progress_updated_at": 789,
         "password": "server-password",
     }
 
@@ -80,6 +85,9 @@ def test_remote_project_round_trip_never_contains_password(tmp_path):
 
     assert restored["host"] == project["host"]
     assert restored["credential_id"] == project["credential_id"]
+    assert restored["progress_message"] == "正在列出远程目录 /srv/code/src"
+    assert restored["dirs_seen"] == 4
+    assert restored["progress_updated_at"] == 789
     assert "password" not in restored
     assert b"server-password" not in (tmp_path / "tasks.db").read_bytes()
 
@@ -197,7 +205,7 @@ def test_migration_from_v4_retains_terminal_tasks_and_events(tmp_path):
             )
         ]
     assert "pending_changes" in columns
-    assert versions == [4, 5, 6, 7]
+    assert versions == [4, 5, 6, 7, 8, 9]
 
 
 def test_fresh_database_runs_every_migration(tmp_path):
@@ -212,7 +220,7 @@ def test_fresh_database_runs_every_migration(tmp_path):
             )
         ]
 
-    assert versions == [1, 2, 3, 4, 5, 6, 7]
+    assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 
 def test_terminal_event_retention_keeps_recent_history(tmp_path):

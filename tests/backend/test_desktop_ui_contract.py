@@ -17,6 +17,18 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert 'id="ask-form"' in html
     assert "/knowledge/spaces" in script
     assert "/desktop/models/discover" in script
+    assert "progress_message" in script
+    assert "probe_status" in script
+    assert "remoteProgressText" in script
+    assert "codeinsight-remote-draft" in script
+    assert "开始分析" in script
+    assert "analyze_now = false" in script
+    assert "连接并同步" in html
+    write_draft = script.split("function writeRemoteDraft()", maxsplit=1)[1].split(
+        "function rememberRemoteFingerprint", maxsplit=1
+    )[0]
+    assert "password" not in write_draft
+    assert 'id="ai-usability-hint"' in html
     assert 'id="remote-host"' in html
     assert 'id="source-remote-tab" type="button"' in html
     assert 'document.querySelector("#connect-ubuntu-button")' in script

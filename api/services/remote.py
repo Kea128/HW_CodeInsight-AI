@@ -11,6 +11,7 @@ import socket
 import stat
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,7 +37,8 @@ logger = get_logger(__name__)
 SYNC_LOOP_SECONDS = 2
 MAX_REMOTE_FILE_BYTES = 100 * 1024 * 1024
 SFTP_DOWNLOAD_CHUNK_BYTES = 256 * 1024
-SFTP_OPERATION_TIMEOUT_SECONDS = 2.0
+SFTP_OPERATION_TIMEOUT_SECONDS = 30.0
+PROGRESS_EMIT_SECONDS = 0.8
 IGNORED_DIRS = {
     ".git",
     ".next",
@@ -124,18 +126,24 @@ class MirrorResult:
     files_excluded: int = 0
     files_oversize: int = 0
     symlinks_skipped: int = 0
+    dirs_seen: int = 0
+    current_path: str = ""
+    progress_message: str = ""
 
     def __iter__(self):
         """Keep the legacy ``count, changed = result`` contract."""
         yield self.files_seen
         yield self.changed
 
-    def as_stats(self) -> dict[str, int]:
+    def as_stats(self) -> dict[str, Any]:
         return {
             "files_seen": self.files_seen,
             "files_excluded": self.files_excluded,
             "files_oversize": self.files_oversize,
             "symlinks_skipped": self.symlinks_skipped,
+            "dirs_seen": self.dirs_seen,
+            "current_path": self.current_path or None,
+            "progress_message": self.progress_message or None,
         }
 
 
@@ -188,6 +196,7 @@ def _mirror_directory(
     remote_root: str,
     local_root: Path,
     cancel_event: threading.Event | None = None,
+    on_progress: Callable[[MirrorResult], None] | None = None,
 ) -> MirrorResult:
     try:
         root_attributes = sftp.lstat(remote_root)
@@ -199,8 +208,23 @@ def _mirror_directory(
     local_root.mkdir(parents=True, exist_ok=True)
     seen: set[str] = set()
     result = MirrorResult()
+    last_emit = 0.0
+
+    def emit(*, force: bool = False) -> None:
+        nonlocal last_emit
+        if on_progress is None:
+            return
+        now = time.monotonic()
+        if not force and now - last_emit < PROGRESS_EMIT_SECONDS:
+            return
+        last_emit = now
+        on_progress(result)
 
     def visit(remote_dir: str, relative_dir: str = "") -> None:
+        result.dirs_seen += 1
+        result.current_path = remote_dir
+        result.progress_message = f"正在列出远程目录 {remote_dir}"
+        emit(force=result.dirs_seen <= 1)
         try:
             entries = sftp.listdir_attr(remote_dir)
         except OSError as error:
@@ -242,6 +266,9 @@ def _mirror_directory(
 
             seen.add(relative)
             result.files_seen += 1
+            result.current_path = remote_path
+            result.progress_message = f"正在同步 {relative}"
+            emit()
             local_path = local_root.joinpath(*relative.split("/"))
             if local_path.is_symlink():
                 local_path.unlink()
@@ -263,6 +290,8 @@ def _mirror_directory(
                 temporary.unlink(missing_ok=True)
 
     visit(remote_root)
+    result.progress_message = "正在清理本机多余文件"
+    emit()
 
     for local_path in sorted(local_root.rglob("*"), reverse=True):
         if cancel_event and cancel_event.is_set():
@@ -280,6 +309,9 @@ def _mirror_directory(
                 local_path.rmdir()
             except OSError:
                 pass
+    result.progress_message = f"同步完成，共 {result.files_seen} 个文件"
+    result.current_path = ""
+    emit(force=True)
     return result
 
 
@@ -288,18 +320,34 @@ def _sync_project(
     password: str,
     known_hosts_path: Path,
     cancel_event: threading.Event | None = None,
+    on_progress: Callable[[MirrorResult], None] | None = None,
 ) -> tuple[MirrorResult, str]:
+    if on_progress:
+        on_progress(
+            MirrorResult(
+                current_path=project["remote_path"],
+                progress_message="正在建立 SSH 连接…",
+            )
+        )
     client, fingerprint = _connect(project, password, known_hosts_path)
     try:
+        if on_progress:
+            on_progress(
+                MirrorResult(
+                    current_path=project["remote_path"],
+                    progress_message="正在打开 SFTP…",
+                )
+            )
         with client.open_sftp() as sftp:
-            # Paramiko reads are blocking. A short channel timeout bounds how
-            # long cancel/delete can wait when the remote host stalls.
+            # Bound stalled reads so cancel/delete can finish; large Ubuntu
+            # trees still need more than a couple of seconds per listing.
             sftp.get_channel().settimeout(SFTP_OPERATION_TIMEOUT_SECONDS)
             result = _mirror_directory(
                 sftp,
                 project["remote_path"],
                 Path(project["local_path"]),
                 cancel_event,
+                on_progress,
             )
         return result, fingerprint
     except RemoteProjectError:
@@ -358,31 +406,69 @@ class RemoteSyncManager:
             None,
         )
 
+    def _apply_current_desktop_model(self, project: dict[str, Any]) -> None:
+        try:
+            from api.desktop_settings import load_desktop_settings
+
+            data = load_desktop_settings()
+        except Exception:
+            return
+        provider = (data.get("provider") or "").lower()
+        if provider not in {"openai", "google", "ollama", "openai_compatible"}:
+            return
+        if provider != "ollama" and not data.get(f"{provider}_api_key"):
+            return
+        if provider == "openai_compatible" and not (
+            data.get("base_url") and data.get("selected_model")
+        ):
+            return
+        project["provider"] = provider
+        if provider == "ollama":
+            if data.get("ollama_model"):
+                project["model"] = data["ollama_model"]
+        elif data.get("selected_model"):
+            project["model"] = data["selected_model"]
+
     def _status(self, project: dict[str, Any]) -> dict[str, Any]:
         continuous_project = self._continuous_project(project)
+        task_id = (
+            continuous_project.get("last_task_id") if continuous_project else None
+        )
+        registry = getattr(self.continuous, "registry", None)
+        task = registry.get(task_id) if registry and task_id else None
+        analysis_status = None
+        analysis_pages_done = 0
+        analysis_pages_total = None
+        if task is not None:
+            status = getattr(task, "status", None)
+            analysis_status = getattr(status, "value", status)
+            analysis_pages_done = int(getattr(task, "pages_done", 0) or 0)
+            analysis_pages_total = getattr(task, "pages_total", None)
         return {
-            key: project[key]
-            for key in (
-                "id",
-                "host",
-                "port",
-                "username",
-                "remote_path",
-                "enabled",
-                "poll_seconds",
-                "host_fingerprint",
-                "last_sync_at",
-                "last_error",
-                "stage",
-                "files_seen",
-                "files_excluded",
-                "files_oversize",
-                "symlinks_skipped",
-            )
-        } | {
-            "last_task_id": continuous_project.get("last_task_id")
-            if continuous_project
-            else None
+            "id": project["id"],
+            "host": project["host"],
+            "port": project["port"],
+            "username": project["username"],
+            "remote_path": project["remote_path"],
+            "enabled": project["enabled"],
+            "poll_seconds": project["poll_seconds"],
+            "host_fingerprint": project.get("host_fingerprint"),
+            "last_sync_at": project.get("last_sync_at"),
+            "last_error": project.get("last_error"),
+            "stage": project.get("stage", "saved"),
+            "files_seen": project.get("files_seen", 0),
+            "files_excluded": project.get("files_excluded", 0),
+            "files_oversize": project.get("files_oversize", 0),
+            "symlinks_skipped": project.get("symlinks_skipped", 0),
+            "dirs_seen": project.get("dirs_seen", 0),
+            "current_path": project.get("current_path"),
+            "progress_message": project.get("progress_message"),
+            "sync_started_at": project.get("sync_started_at"),
+            "progress_updated_at": project.get("progress_updated_at"),
+            "last_task_id": task_id,
+            "analysis_status": analysis_status,
+            "analysis_pages_done": analysis_pages_done,
+            "analysis_pages_total": analysis_pages_total,
         }
 
     def _reconcile_analysis_stages(self) -> None:
@@ -480,6 +566,11 @@ class RemoteSyncManager:
                 "files_excluded": 0,
                 "files_oversize": 0,
                 "symlinks_skipped": 0,
+                "dirs_seen": 0,
+                "current_path": None,
+                "progress_message": None,
+                "sync_started_at": None,
+                "progress_updated_at": None,
             }
             try:
                 self.credentials.set(project["credential_id"], password)
@@ -526,6 +617,8 @@ class RemoteSyncManager:
             await self._sync(project_id, analyze_when_ready=analyze_when_ready)
 
     async def _analyze_locked(self, project: dict[str, Any]) -> None:
+        self._apply_current_desktop_model(project)
+        project["progress_message"] = "正在启动分析任务…"
         self._save_stage(project, "analyzing")
         try:
             await self.continuous.register(
@@ -557,7 +650,7 @@ class RemoteSyncManager:
                 return self._status(project)
             self._save_stage(project, "connecting")
             self._active[project_id] = asyncio.create_task(
-                self._initial_sync(project_id, analyze_when_ready=True)
+                self._initial_sync(project_id, analyze_when_ready=False)
             )
             return self._status(project)
 
@@ -578,29 +671,41 @@ class RemoteSyncManager:
             cancel_event = threading.Event()
             self._cancel_events[project_id] = cancel_event
             try:
+                now_ms = int(time.time() * 1000)
+                project["sync_started_at"] = now_ms
+                project["progress_updated_at"] = now_ms
+                project["progress_message"] = "正在建立 SSH 连接…"
+                project["current_path"] = project["remote_path"]
                 self._save_stage(project, "connecting")
                 self._save_stage(project, "syncing")
+
+                def persist_progress(result: MirrorResult) -> None:
+                    project.update(result.as_stats())
+                    project["progress_updated_at"] = int(time.time() * 1000)
+                    self.store.save_remote_project(project)
+
                 result, fingerprint = await asyncio.to_thread(
                     _sync_project,
                     project,
                     password,
                     self.known_hosts_path,
                     cancel_event,
+                    persist_progress,
                 )
                 project["host_fingerprint"] = fingerprint
                 project.update(result.as_stats())
                 project["last_sync_at"] = int(time.time() * 1000)
+                project["progress_message"] = (
+                    result.progress_message
+                    or f"同步完成，共 {result.files_seen} 个文件"
+                )
+                project["current_path"] = None
+                project["progress_updated_at"] = int(time.time() * 1000)
                 self._failures.pop(project_id, None)
                 self._retry_after.pop(project_id, None)
                 self._save_stage(project, "ready_for_analysis")
-                continuous_project = self._continuous_project(project)
-                if not continuous_project and analyze_when_ready:
+                if analyze_when_ready:
                     await self._analyze_locked(project)
-                elif continuous_project and result.changed:
-                    continuous_project["last_scan_at"] = 0
-                    self.store.save_continuous_project(continuous_project)
-                    self._save_stage(project, "analyzing")
-                    await self.continuous.scan_once()
                 return self._status(project)
             except Exception as error:  # noqa: BLE001 - persisted for UI diagnostics
                 self._save_stage(project, "failed", str(error))
@@ -705,7 +810,7 @@ class RemoteSyncManager:
                 ) and time.monotonic() >= self._retry_after.get(project_id, 0):
                     async def run_one(identifier: str) -> None:
                         async with self._concurrency:
-                            await self._sync(identifier, analyze_when_ready=True)
+                            await self._sync(identifier, analyze_when_ready=False)
 
                     self._active[project_id] = asyncio.create_task(run_one(project_id))
             self._active = {

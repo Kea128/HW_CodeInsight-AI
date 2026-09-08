@@ -10,11 +10,11 @@ class RemoteProjectRequest(BaseModel):
     password: SecretStr = Field(repr=False)
     remote_path: str = Field(min_length=1, max_length=4096)
     poll_seconds: int = Field(60, ge=10, le=3600)
-    provider: Literal["openai", "google", "ollama"] = "ollama"
+    provider: Literal["openai", "google", "ollama", "openai_compatible"] = "ollama"
     model: str | None = None
     language: str = "zh"
     host_fingerprint: str | None = Field(default=None, min_length=8, max_length=256)
-    analyze_now: bool = True
+    analyze_now: bool = False
 
     @field_validator("host", "username")
     @classmethod
@@ -57,6 +57,14 @@ class RemoteProjectStatus(BaseModel):
     files_excluded: int = 0
     files_oversize: int = 0
     symlinks_skipped: int = 0
+    dirs_seen: int = 0
+    current_path: str | None = None
+    progress_message: str | None = None
+    sync_started_at: int | None = None
+    progress_updated_at: int | None = None
+    analysis_status: str | None = None
+    analysis_pages_done: int = 0
+    analysis_pages_total: int | None = None
 
 
 class SSHFingerprintProbeRequest(BaseModel):

@@ -7,7 +7,11 @@ import pytest
 from api import desktop_settings
 from api.desktop_settings import (
     apply_desktop_settings,
+    desktop_ai_hint,
+    infer_probe_status,
+    is_provider_configured,
     load_desktop_settings,
+    record_model_probe,
     save_desktop_settings,
 )
 
@@ -160,3 +164,43 @@ def test_apply_settings_hot_reloads_loaded_embedder_config(monkeypatch, tmp_path
     assert applied["provider"] == "ollama"
     assert loaded_config.EMBEDDER_TYPE == "ollama"
     assert os.environ["CODEINSIGHT_OLLAMA_MODEL"] == "qwen3:4b"
+
+
+def test_compatible_api_is_not_configured_without_model():
+    data = {
+        "provider": "openai_compatible",
+        "openai_compatible_api_key": "__keyring__",
+        "base_url": "https://api.example.com",
+    }
+
+    assert is_provider_configured(data, {}) is False
+    assert "模型 ID" in desktop_ai_hint(
+        data, configured=False, ollama_status={}, probe_status="untested"
+    )
+
+
+def test_compatible_api_hint_reports_untested_and_failed(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(desktop_settings.keyring, "get_password", lambda *_: None)
+    data = {
+        "provider": "openai_compatible",
+        "openai_compatible_api_key": "__keyring__",
+        "base_url": "https://api.example.com",
+        "selected_model": "qwen-plus",
+    }
+
+    assert is_provider_configured(data, {}) is True
+    assert infer_probe_status(data) == "untested"
+    assert "尚未测试" in desktop_ai_hint(
+        data, configured=True, ollama_status={}, probe_status="untested"
+    )
+
+    record_model_probe(ok=False, message="上游返回 401", model="qwen-plus")
+    probed = load_desktop_settings()
+    data.update(probed)
+    data["openai_compatible_api_key"] = "__keyring__"
+    data["selected_model"] = "qwen-plus"
+    assert infer_probe_status(data) == "failed"
+    assert "测试失败" in desktop_ai_hint(
+        data, configured=True, ollama_status={}, probe_status="failed"
+    )
