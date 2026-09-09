@@ -10,6 +10,7 @@ import pytest
 
 from api.schemas import RemoteProjectRequest, TaskStatus
 from api.services import ssh_client
+from api.services.ssh_client import fingerprints_match
 from api.services.remote import (
     MAX_REMOTE_FILE_BYTES,
     MirrorResult,
@@ -223,6 +224,13 @@ def test_mirror_cancels_during_chunked_file_download(monkeypatch, tmp_path):
     assert not (mirror / ".README.md.codeinsight.tmp").exists()
 
 
+def _pass_login(monkeypatch):
+    monkeypatch.setattr(
+        "api.services.remote._verify_login",
+        lambda *_args, **_kwargs: "SHA256:test",
+    )
+
+
 def test_remote_project_id_is_stable_and_contains_no_credentials():
     first = _project_id("10.0.0.8", 22, "ubuntu", "/srv/code")
     second = _project_id("10.0.0.8", 22, "ubuntu", "/srv/code")
@@ -230,6 +238,12 @@ def test_remote_project_id_is_stable_and_contains_no_credentials():
     assert first == second
     assert first.startswith("remote-")
     assert "ubuntu" not in first
+
+
+def test_fingerprint_compare_rejects_different_lengths():
+    assert fingerprints_match("SHA256:abc", "SHA256:abc") is True
+    assert fingerprints_match("SHA256:abc", "SHA256:abcd") is False
+    assert fingerprints_match("", "SHA256:abc") is False
 
 
 def test_authentication_error_does_not_echo_credentials():
@@ -271,8 +285,38 @@ async def test_create_requires_confirmed_host_fingerprint(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_create_rejects_unreachable_host_without_saving(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    def fail(*_args, **_kwargs):
+        raise RemoteProjectError("无法连接 Ubuntu 服务器：timed out")
+
+    monkeypatch.setattr("api.services.remote._verify_login", fail)
+    store = FakeStore()
+    credentials = FakeCredentials()
+    manager = RemoteSyncManager(
+        FakeContinuous(), store=store, credentials=credentials
+    )
+
+    with pytest.raises(RemoteProjectError, match="无法连接"):
+        await manager.create(
+            RemoteProjectRequest(
+                host="10.0.0.8",
+                username="ubuntu",
+                password="server-secret",
+                remote_path="/srv/code/demo",
+                host_fingerprint="SHA256:test",
+            )
+        )
+
+    assert store.remote_projects == {}
+    assert credentials.values == {}
+
+
+@pytest.mark.asyncio
 async def test_create_stores_password_only_in_credentials(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
     monkeypatch.setattr(
         "api.services.remote._sync_project",
         lambda project, password, known_hosts, cancel_event=None, on_progress=None: (
@@ -309,6 +353,7 @@ async def test_create_stores_password_only_in_credentials(monkeypatch, tmp_path)
 @pytest.mark.asyncio
 async def test_first_sync_without_ai_stays_ready_for_analysis(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
     monkeypatch.setattr(
         "api.services.remote._sync_project",
         lambda project, password, known_hosts, cancel_event=None, on_progress=None: (
@@ -388,6 +433,7 @@ async def test_concurrent_manual_sync_only_starts_one_task(tmp_path):
 @pytest.mark.asyncio
 async def test_background_analysis_failure_keeps_project_retryable(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
 
     def sync(project, password, known_hosts, cancel_event=None, on_progress=None):
         mirror = Path(project["local_path"])
@@ -427,6 +473,7 @@ async def test_create_rolls_back_credential_when_record_save_fails(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
     store = FailingSaveStore()
     credentials = FakeCredentials()
     manager = RemoteSyncManager(
@@ -498,6 +545,7 @@ def test_project_listing_is_read_only_and_background_reconciles_analysis(tmp_pat
 @pytest.mark.asyncio
 async def test_sync_persists_live_progress_before_completion(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
     store = FakeStore()
     seen = []
 
@@ -542,6 +590,7 @@ async def test_create_accepts_openai_compatible_and_uses_model(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
     monkeypatch.setattr(
         "api.services.remote._sync_project",
         lambda project, password, known_hosts, cancel_event=None, on_progress=None: (

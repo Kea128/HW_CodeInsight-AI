@@ -67,6 +67,14 @@ def fingerprint(key: paramiko.PKey) -> str:
     return f"SHA256:{base64.b64encode(digest).decode().rstrip('=')}"
 
 
+def fingerprints_match(expected: str | None, actual: str | None) -> bool:
+    left = (expected or "").encode("utf-8")
+    right = (actual or "").encode("utf-8")
+    if not left or not right or len(left) != len(right):
+        return False
+    return secrets.compare_digest(left, right)
+
+
 def friendly_connection_error(error: Exception) -> RemoteProjectError:
     if isinstance(error, paramiko.AuthenticationException):
         return RemoteProjectError("Ubuntu 用户名或密码错误")
@@ -115,7 +123,7 @@ class _ExpectedFingerprintPolicy(paramiko.MissingHostKeyPolicy):
         self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey
     ) -> None:
         actual = fingerprint(key)
-        if not secrets.compare_digest(self.expected, actual):
+        if not fingerprints_match(self.expected, actual):
             raise RemoteProjectError("服务器主机密钥已变化，已拒绝连接")
         client.get_host_keys().add(hostname, key.get_name(), key)
 
@@ -147,7 +155,7 @@ def connect_ssh(
             raise paramiko.SSHException("SSH transport is unavailable")
         transport.set_keepalive(30)
         server_fingerprint = fingerprint(transport.get_remote_server_key())
-        if not secrets.compare_digest(expected_fingerprint, server_fingerprint):
+        if not fingerprints_match(expected_fingerprint, server_fingerprint):
             raise RemoteProjectError("服务器主机密钥已变化，已拒绝连接")
         return client, server_fingerprint
     except RemoteProjectError:

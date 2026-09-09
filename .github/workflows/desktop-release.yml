@@ -230,7 +230,7 @@ jobs:
         with:
           tagName: desktop-v__VERSION__
           releaseName: "CodeInsight-AI Desktop v__VERSION__"
-          releaseBody: "Windows desktop release with visible Ubuntu sync progress, a manual Start Analysis button, remembered SSH form fields (no password), and clearer custom-API usability hints."
+          releaseBody: "Hotfix: verify the Ubuntu SSH login before saving a remote project, always re-probe the live host fingerprint, and keep connection errors on the add-project form."
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true

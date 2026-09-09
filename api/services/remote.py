@@ -107,6 +107,15 @@ def _connect(
     return connect_ssh(project, password, known_hosts_path)
 
 
+def _verify_login(
+    project: dict[str, Any], password: str, known_hosts_path: Path
+) -> str:
+    """Authenticate now so add-project failures stay on the form."""
+    client, fingerprint = _connect(project, password, known_hosts_path)
+    client.close()
+    return fingerprint
+
+
 def _valid_remote_name(name: str) -> bool:
     return (
         bool(name)
@@ -523,6 +532,17 @@ class RemoteSyncManager:
         if not request.host_fingerprint:
             raise RemoteProjectError("请先探测并确认服务器主机指纹")
         remote_path = posixpath.normpath(request.remote_path)
+        await asyncio.to_thread(
+            _verify_login,
+            {
+                "host": request.host,
+                "port": request.port,
+                "username": request.username,
+                "host_fingerprint": request.host_fingerprint,
+            },
+            password,
+            self.known_hosts_path,
+        )
         project_id = _project_id(
             request.host, request.port, request.username, remote_path
         )

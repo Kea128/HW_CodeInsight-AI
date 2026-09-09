@@ -23,6 +23,15 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert "codeinsight-remote-draft" in script
     assert "开始分析" in script
     assert "analyze_now = false" in script
+    assert 'timeout: 45000' in script
+    assert 'timeout: 60000' in script
+    submit_handler = script.split(
+        'document.querySelector("#remote-form").addEventListener("submit"', maxsplit=1
+    )[1].split(
+        'document.querySelector("#remote-form").addEventListener("input"', maxsplit=1
+    )[0]
+    assert "/remote/fingerprint" in submit_handler
+    assert "remembered.value !== probe.fingerprint" in submit_handler
     assert "连接并同步" in html
     write_draft = script.split("function writeRemoteDraft()", maxsplit=1)[1].split(
         "function rememberRemoteFingerprint", maxsplit=1

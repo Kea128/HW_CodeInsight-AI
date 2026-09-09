@@ -48,8 +48,8 @@ class ApiError extends Error {
 }
 
 function errorMessage(error) {
-  if (typeof error === "string" && error.trim()) return error;
-  if (error?.message) return error.message;
+  if (typeof error === "string" && error.trim()) return formatApiDetail(error);
+  if (error?.message) return formatApiDetail(error.message);
   try {
     const serialized = JSON.stringify(error);
     if (serialized && serialized !== "{}") return serialized;
@@ -57,6 +57,20 @@ function errorMessage(error) {
     // Ignore serialization errors and use the fallback below.
   }
   return "未知错误";
+}
+
+function formatApiDetail(detail) {
+  if (typeof detail !== "string" || !detail.trim()) return detail || "未知错误";
+  try {
+    const parsed = JSON.parse(detail);
+    if (Array.isArray(parsed)) {
+      const messages = parsed.map((item) => item.msg || item.message).filter(Boolean);
+      if (messages.length) return messages.join("；");
+    }
+  } catch {
+    /* keep the original engine message */
+  }
+  return detail;
 }
 
 function formatAppVersion(version) {
@@ -1230,28 +1244,28 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
   };
   try {
     message.className = "message";
+    setRemoteFlow("fingerprint");
+    message.textContent = "正在读取服务器主机指纹（尚未发送用户名和密码）…";
+    const probe = await api("/remote/fingerprint", {
+      method: "POST",
+      timeout: 45000,
+      body: JSON.stringify({ host: body.host, port: body.port }),
+    });
     const remembered = fingerprintForForm(body.host, body.port);
-    if (!remembered) {
-      setRemoteFlow("fingerprint");
-      message.textContent = "正在读取服务器主机指纹（尚未发送用户名和密码）…";
-      const probe = await api("/remote/fingerprint", {
-        method: "POST",
-        body: JSON.stringify({ host: body.host, port: body.port }),
-      });
+    if (!remembered || remembered.value !== probe.fingerprint) {
       const approved = window.confirm(
         `首次连接需要确认 Ubuntu 主机身份：\n\n${probe.algorithm}\n${probe.fingerprint}\n\n请与服务器管理员核对。确认信任并继续吗？`,
       );
       if (!approved) throw new Error("已取消：未确认服务器主机指纹");
-      rememberRemoteFingerprint(`${body.host}:${body.port}`, probe.fingerprint);
-    } else {
-      rememberRemoteFingerprint(remembered.key, remembered.value);
     }
-    body.host_fingerprint = confirmedRemoteFingerprint.value;
+    rememberRemoteFingerprint(`${body.host}:${body.port}`, probe.fingerprint);
+    body.host_fingerprint = probe.fingerprint;
     body.analyze_now = false;
     setRemoteFlow("connect");
-    message.textContent = "指纹已确认，正在安全连接 Ubuntu…";
+    message.textContent = "指纹已确认，正在验证用户名和密码…";
     await api("/remote/projects", {
       method: "POST",
+      timeout: 60000,
       body: JSON.stringify(body),
     });
     passwordInput.value = "";
