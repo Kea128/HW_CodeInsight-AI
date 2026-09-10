@@ -13,6 +13,7 @@ from api.desktop_settings import (
     load_desktop_settings,
     record_model_probe,
     save_desktop_settings,
+    _resolve_embedder_type,
 )
 
 
@@ -73,9 +74,10 @@ def test_openai_compatible_settings_apply_base_url_and_model(monkeypatch, tmp_pa
     assert saved["provider"] == "openai_compatible"
     assert applied["openai_compatible_api_key"] == "__keyring__"
     assert os.environ["OPENAI_API_KEY"] == "sk-test"
-    assert os.environ["OPENAI_BASE_URL"] == "https://api.deepseek.com"
+    assert os.environ["OPENAI_BASE_URL"] == "https://api.deepseek.com/v1"
     assert os.environ["CODEINSIGHT_DESKTOP_MODEL"] == "deepseek-chat"
     assert os.environ["DEEPWIKI_WIKI_PAGE_CONCURRENCY"] == "4"
+    assert os.environ["DEEPWIKI_EMBEDDER_TYPE"] == "none"
 
 
 def test_plaintext_key_is_migrated_and_removed(monkeypatch, tmp_path):
@@ -204,3 +206,33 @@ def test_compatible_api_hint_reports_untested_and_failed(monkeypatch, tmp_path):
     assert "测试失败" in desktop_ai_hint(
         data, configured=True, ollama_status={}, probe_status="failed"
     )
+
+
+def test_resolve_embedder_type_uses_local_for_compatible_and_none():
+    assert _resolve_embedder_type("openai_compatible", "auto") == "none"
+    assert _resolve_embedder_type("openai", "none") == "none"
+    assert _resolve_embedder_type("google", "none") == "none"
+    assert _resolve_embedder_type("openai", "auto") == "openai"
+    assert _resolve_embedder_type("openai_compatible", "openai") == "openai"
+    assert _resolve_embedder_type("ollama", "auto") == "ollama"
+
+
+def test_embedder_mode_none_applies_local_embedder(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("DEEPWIKI_EMBEDDER_TYPE", raising=False)
+    values = {}
+    monkeypatch.setattr(
+        desktop_settings.keyring,
+        "set_password",
+        lambda service, provider, value: values.__setitem__((service, provider), value),
+    )
+    monkeypatch.setattr(
+        desktop_settings.keyring,
+        "get_password",
+        lambda service, provider: values.get((service, provider)),
+    )
+
+    save_desktop_settings("openai", "secret-key", embedder_mode="none")
+    apply_desktop_settings()
+
+    assert os.environ["DEEPWIKI_EMBEDDER_TYPE"] == "none"

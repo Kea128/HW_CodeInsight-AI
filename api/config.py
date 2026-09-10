@@ -16,6 +16,8 @@ from api.clients import (
     GoogleEmbedderClient,
     GoogleGenAIClient,
     LiteLLMClient,
+    CompatibleChatClient,
+    LocalHashEmbedderClient,
     OllamaClient,
     OpenAIClient,
     OpenRouterClient,
@@ -83,6 +85,8 @@ CLIENT_CLASSES = {
     AzureAIClient.__name__: AzureAIClient,
     DashscopeClient.__name__: DashscopeClient,
     AnthropicBedrockClient.__name__: AnthropicBedrockClient,
+    LocalHashEmbedderClient.__name__: LocalHashEmbedderClient,
+    CompatibleChatClient.__name__: CompatibleChatClient,
 }
 
 
@@ -96,7 +100,7 @@ _DEFAULT_PROVIDER_MAP = {
     "azure": AzureAIClient,
     "dashscope": DashscopeClient,
     "anthropic": AnthropicBedrockClient,
-    "openai_compatible": OpenAIClient,
+    "openai_compatible": CompatibleChatClient,
 }
 
 
@@ -184,7 +188,13 @@ def load_embedder_config():
     embedder_config = load_json_config("embedder.json")
 
     # Process client classes
-    for key in ["embedder", "embedder_ollama", "embedder_google", "embedder_bedrock"]:
+    for key in [
+        "embedder",
+        "embedder_ollama",
+        "embedder_google",
+        "embedder_bedrock",
+        "embedder_none",
+    ]:
         if key in embedder_config and "client_class" in embedder_config[key]:
             class_name = embedder_config[key]["client_class"]
             if class_name in CLIENT_CLASSES:
@@ -201,6 +211,8 @@ def get_embedder_config():
         dict: The embedder configuration with model_client resolved
     """
     embedder_type = EMBEDDER_TYPE
+    if embedder_type == "none":
+        return configs.get("embedder_none") or _local_embedder_config()
     if embedder_type == "bedrock" and "embedder_bedrock" in configs:
         return configs.get("embedder_bedrock", {})
     elif embedder_type == "google" and "embedder_google" in configs:
@@ -277,8 +289,10 @@ def get_embedder_type():
     Get the current embedder type based on configuration.
 
     Returns:
-        str: 'bedrock', 'ollama', 'google', or 'openai' (default)
+        str: 'none', 'bedrock', 'ollama', 'google', or 'openai' (default)
     """
+    if EMBEDDER_TYPE == "none":
+        return "none"
     if is_bedrock_embedder():
         return "bedrock"
     elif is_ollama_embedder():
@@ -287,6 +301,18 @@ def get_embedder_type():
         return "google"
     else:
         return "openai"
+
+
+def _local_embedder_config():
+    configured = configs.get("embedder_none") or {}
+    if configured.get("model_client"):
+        return configured
+    return {
+        "client_class": "LocalHashEmbedderClient",
+        "model_client": LocalHashEmbedderClient,
+        "batch_size": 256,
+        "model_kwargs": {"model": "local-hash", "dimensions": 256},
+    }
 
 
 # Load repository and file filters configuration
@@ -349,6 +375,7 @@ if embedder_config:
         "embedder_ollama",
         "embedder_google",
         "embedder_bedrock",
+        "embedder_none",
         "retriever",
         "text_splitter",
     ]:
@@ -533,7 +560,7 @@ def get_embedder(
     Args:
         is_local_ollama: Legacy parameter for Ollama embedder
         use_google_embedder: Legacy parameter for Google embedder
-        embedder_type: Direct specification of embedder type ('ollama', 'google', 'bedrock', 'openai')
+        embedder_type: Direct specification of embedder type ('ollama', 'google', 'bedrock', 'openai', 'none')
 
     Returns:
         adal.Embedder: Configured embedder instance
@@ -548,6 +575,8 @@ def get_embedder(
             embedder_config = configs["embedder_google"]
         elif embedder_type == "bedrock":
             embedder_config = configs["embedder_bedrock"]
+        elif embedder_type == "none":
+            embedder_config = _local_embedder_config()
         else:  # default to openai
             embedder_config = configs["embedder"]
     elif is_local_ollama:
@@ -563,6 +592,8 @@ def get_embedder(
             embedder_config = configs["embedder_ollama"]
         elif current_type == "google":
             embedder_config = configs["embedder_google"]
+        elif current_type == "none":
+            embedder_config = _local_embedder_config()
         else:
             embedder_config = configs["embedder"]
 

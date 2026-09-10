@@ -22,6 +22,14 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 
+def _space_location(space: KnowledgeSpace) -> str:
+    parent = space.parent_workspace or space.workspace_root
+    dirs = [item for item in space.included_dirs if item]
+    if dirs:
+        return f"{parent} / {', '.join(dirs)}"
+    return parent
+
+
 def _task_request(space: KnowledgeSpace, request: KnowledgeSpaceCreateRequest) -> WikiTaskRequest:
     root_name = space.workspace_root.replace("\\", "/").rstrip("/").split("/")[-1]
     return WikiTaskRequest(
@@ -36,6 +44,7 @@ def _task_request(space: KnowledgeSpace, request: KnowledgeSpaceCreateRequest) -
         excluded_dirs=space.excluded_dirs,
         comprehensive=True,
         space_id=space.space_id,
+        display_location=_space_location(space),
     )
 
 

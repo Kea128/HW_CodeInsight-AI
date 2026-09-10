@@ -45,6 +45,19 @@ async def prepare_repo_index(
     if request.included_files:
         logger.info(f"Using custom included files: {request.included_files}")
 
+    try:
+        from api.services.oplog import log_event
+
+        log_event(
+            "index_start",
+            "开始建立检索索引",
+            provider=request.provider,
+            model=request.model,
+            space_id=request.space_id,
+            embedder=getattr(rag, "embedder_type", None),
+        )
+    except Exception:
+        pass
     await rag.aprepare_retriever(
         request.repo_url,
         request.type,
@@ -85,12 +98,15 @@ async def research_chat(
         logger.info("Retriever prepared for %s", request.repo_url)
 
     except ValueError as e:
-        if "No valid documents with embeddings found" in str(e):
-            logger.error(f"No valid embeddings found: {str(e)}")
-            raise e
-        else:
-            logger.error("ValueError preparing retriever: %s", str(e))
-            raise e
+        message = str(e)
+        if "No valid documents with embeddings found" in message:
+            logger.error("No valid embeddings found: %s", message)
+            raise ValueError(
+                "无法为代码建立检索索引。自定义接口通常不提供嵌入模型。"
+                "请在设置里把嵌入方式改为「不使用向量」，或改用本机 Ollama。"
+            ) from e
+        logger.error("ValueError preparing retriever: %s", message)
+        raise
     except Exception as e:
         logger.error("Error preparing retriever: %s", str(e))
         raise e

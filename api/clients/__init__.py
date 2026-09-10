@@ -17,17 +17,21 @@ from .bedrock import BedrockClient
 from .dashscope import DashscopeClient
 from .google_embedder import GoogleEmbedderClient
 from .litellm import LiteLLMClient
+from .local_embedder import LocalHashEmbedderClient
 from .ollama import OllamaClient
+from .openai_compat import CompatibleChatClient
 from .openrouter import OpenRouterClient
 
 __all__ = [
     "AnthropicBedrockClient",
     "AzureAIClient",
     "BedrockClient",
+    "CompatibleChatClient",
     "DashscopeClient",
     "GoogleEmbedderClient",
     "GoogleGenAIClient",
     "LiteLLMClient",
+    "LocalHashEmbedderClient",
     "OllamaClient",
     "OpenAIClient",
     "OpenRouterClient",

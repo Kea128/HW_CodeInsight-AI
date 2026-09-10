@@ -16,6 +16,10 @@ class WikiTaskRequest(RepoRequestBase):
 
     owner: str
     repo: str
+    display_location: str | None = Field(
+        None,
+        description="Human-readable repository location for desktop task lists",
+    )
     comprehensive: bool = Field(True, description="Comprehensive vs concise wiki")
     force: bool = Field(
         False,

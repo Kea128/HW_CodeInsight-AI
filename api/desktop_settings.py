@@ -261,7 +261,12 @@ def apply_desktop_settings() -> dict[str, str]:
     if data.get("selected_model"):
         os.environ["CODEINSIGHT_DESKTOP_MODEL"] = data["selected_model"]
     if data.get("base_url"):
-        os.environ["OPENAI_BASE_URL"] = data["base_url"]
+        try:
+            from api.services.model_discover import normalize_openai_base_url
+
+            os.environ["OPENAI_BASE_URL"] = normalize_openai_base_url(data["base_url"])
+        except ValueError:
+            os.environ["OPENAI_BASE_URL"] = data["base_url"].strip()
     if data.get("wiki_page_concurrency"):
         os.environ["DEEPWIKI_WIKI_PAGE_CONCURRENCY"] = data["wiki_page_concurrency"]
     elif provider == "openai_compatible":
@@ -277,6 +282,24 @@ def apply_desktop_settings() -> dict[str, str]:
         api_key = None
     if environment and api_key:
         os.environ[environment] = api_key
+    try:
+        from api.services.oplog import log_event
+
+        host = ""
+        raw = os.environ.get("OPENAI_BASE_URL") or data.get("base_url") or ""
+        if raw:
+            host = raw.split("://", 1)[-1].split("/", 1)[0]
+        log_event(
+            "settings_applied",
+            f"已加载设置：{provider}"
+            + (f" / {data.get('selected_model') or data.get('ollama_model') or ''}" if data.get("selected_model") or data.get("ollama_model") else ""),
+            provider=provider,
+            model=data.get("selected_model") or data.get("ollama_model"),
+            embedder=embedder_type,
+            api_host=host,
+        )
+    except Exception:
+        pass
     return data
 
 
@@ -284,9 +307,9 @@ def _resolve_embedder_type(provider: str, embedder_mode: str) -> str:
     if embedder_mode in {"openai", "google", "ollama"}:
         return embedder_mode
     if embedder_mode == "none":
-        return "openai"
+        return "none"
     if provider == "openai_compatible":
-        return "openai"
+        return "none"
     if provider in {"openai", "google", "ollama"}:
         return provider
     return "openai"

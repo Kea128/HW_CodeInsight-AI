@@ -16,6 +16,7 @@ from api.desktop_settings import (
     save_desktop_settings,
 )
 from api.logger import get_logger
+from api.services.oplog import export_text, log_event, operation_log_path, recent_events
 from api.schemas import Model, ModelConfig, Provider
 from api.services.model_discover import (
     _gateway_error_message,
@@ -168,16 +169,24 @@ async def test_desktop_model(request: ModelEndpointRequest):
             request.base_url, api_key, request.model or ""
         )
         _remember_probe(ok=True, message="连接成功", model=request.model)
+        log_event(
+            "probe_ok",
+            f"测试连接成功：{request.model}",
+            model=request.model,
+            api_host=request.base_url.split("://", 1)[-1].split("/", 1)[0],
+        )
         return result
     except CredentialStorageUnavailable as error:
         _remember_probe(ok=False, message=str(error), model=request.model)
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ValueError as error:
         _remember_probe(ok=False, message=str(error), model=request.model)
+        log_event("probe_failed", str(error), level="error", model=request.model)
         raise HTTPException(status_code=400, detail=str(error)) from error
     except httpx.HTTPError as error:
         message = _gateway_error_message(error, "连接测试")
         _remember_probe(ok=False, message=message, model=request.model)
+        log_event("probe_failed", message, level="error", model=request.model)
         raise HTTPException(
             status_code=502,
             detail=message,
@@ -189,6 +198,15 @@ def _remember_probe(*, ok: bool, message: str, model: str | None) -> None:
         record_model_probe(ok=ok, message=message, model=model)
     except Exception:
         logger.exception("Failed to persist model probe result")
+
+
+@router.get("/desktop/logs")
+async def get_desktop_logs(limit: int = 200):
+    return {
+        "path": str(operation_log_path()),
+        "events": recent_events(max(1, min(limit, 400))),
+        "text": export_text(max(1, min(limit, 400))),
+    }
 
 
 @router.get("/desktop/ollama/status")

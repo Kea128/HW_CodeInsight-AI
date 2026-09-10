@@ -17,6 +17,19 @@ const tasks = [{
   pages_total: 4,
   error: "模型连接失败",
   submitted_at: 1_700_000_000,
+  location: "D:/WorkSpace/demo",
+}, {
+  id: "space_remote1",
+  owner: "gyk@10.39.48.26",
+  repo: "br-feature-ADS-truck-0820",
+  name: "gyk@10.39.48.26/br-feature-ADS-truck-0820",
+  repo_type: "local",
+  language: "zh",
+  status: "generating",
+  pages_done: 2,
+  pages_total: 8,
+  submitted_at: 1_700_000_100,
+  location: "gyk@10.39.48.26:/home/WorkSpace/YinWang/br_feature_ADS_truck_0820",
 }];
 
 function response(body, status = 200) {
@@ -35,6 +48,15 @@ function route(url, options = {}) {
   }
   if (path === "/wiki/tasks") return response(tasks);
   if (path === "/wiki/tasks/failed-task") return response(tasks[0]);
+  if (path === "/knowledge/spaces") {
+    return response([{
+      space_id: "remote1",
+      workspace_root: "C:/mirror",
+      included_dirs: [],
+      label: "gyk@10.39.48.26:/home/WorkSpace/YinWang/br_feature_ADS_truck_0820",
+      parent_workspace: "gyk@10.39.48.26:/home/WorkSpace/YinWang/br_feature_ADS_truck_0820",
+    }]);
+  }
   if (path === "/remote/projects") {
     return response([{
       id: "remote-one",
@@ -184,6 +206,18 @@ describe("desktop workspace UI", () => {
     expect(document.querySelector("#source-remote-tab").getAttribute("aria-selected")).toBe("true");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it("shows the full repository location on analysis tasks and remote cards", async () => {
+    await boot();
+    await vi.waitFor(() => {
+      const tasks = document.querySelector("#task-list").textContent;
+      expect(tasks).toContain("/home/WorkSpace/YinWang/br_feature_ADS_truck_0820");
+      expect(tasks).toContain("D:/WorkSpace/demo");
+      const remote = document.querySelector("#remote-project-list").textContent;
+      expect(remote).toContain("/home/WorkSpace/YinWang/br_feature_ADS_truck_0820");
+      expect(remote).toContain("gyk@10.39.48.26");
+    });
   });
 
   it("renders failed task details and a working retry action", async () => {

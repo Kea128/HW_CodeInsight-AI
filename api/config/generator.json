@@ -179,7 +179,7 @@
       }
     },
     "openai_compatible": {
-      "client_class": "OpenAIClient",
+      "client_class": "CompatibleChatClient",
       "default_model": "deepseek-chat",
       "supportsCustomModel": true,
       "models": {

@@ -501,6 +501,9 @@ class RemoteSyncManager:
             repo=_safe_repo_name(project["remote_path"]),
             included_dirs=list(getattr(space, "included_dirs", None) or []),
             space_id=space.space_id,
+            display_location=_scope_label(
+                project, list(getattr(space, "included_dirs", None) or [])
+            ),
             comprehensive=True,
             force=True,
         )
@@ -576,8 +579,12 @@ class RemoteSyncManager:
 
     def _apply_current_desktop_model(self, project: dict[str, Any]) -> bool:
         try:
-            from api.desktop_settings import load_desktop_settings
+            from api.desktop_settings import apply_desktop_settings, load_desktop_settings
 
+            try:
+                apply_desktop_settings()
+            except Exception:
+                pass
             data = load_desktop_settings()
         except Exception:
             return False
@@ -796,6 +803,18 @@ class RemoteSyncManager:
     async def _analyze_locked(self, project: dict[str, Any]) -> None:
         if not self._apply_current_desktop_model(project):
             raise RemoteProjectError("请先在设置中配置可用的 AI")
+        try:
+            from api.services.oplog import log_event
+
+            log_event(
+                "analyze_start",
+                f"开始分析 {project.get('username')}@{project.get('host')}:{project.get('remote_path')}",
+                provider=project.get("provider"),
+                model=project.get("model"),
+                host=project.get("host"),
+            )
+        except Exception:
+            pass
         space = self._upsert_scope_space(project, [])
         project["progress_message"] = "正在启动分析任务…"
         self._save_stage(project, "analyzing")

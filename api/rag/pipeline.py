@@ -160,6 +160,27 @@ def read_all_documents(
     return documents
 
 
+def _embedder_marker_path(db_path: str) -> Path:
+    return Path(str(db_path) + ".embedder")
+
+
+def _write_embedder_marker(db_path: str, embedder_type: str) -> None:
+    try:
+        _embedder_marker_path(db_path).write_text(embedder_type, encoding="utf-8")
+    except OSError:
+        logger.warning("Could not write embedder marker for %s", db_path)
+
+
+def _read_embedder_marker(db_path: str | None) -> str | None:
+    if not db_path:
+        return None
+    try:
+        value = _embedder_marker_path(db_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
 def get_repo_db(repo: Repo, space_id: str | None = None) -> str:
     if not repo.root_path:
         raise ValueError(f"Repo root path is empty: {repo}")
@@ -285,6 +306,7 @@ class DatabaseManager:
         self.db = None
         self.repo_url_or_path = None
         self.repo_paths = None
+        self.embedder_type_used = None
 
     def prepare_database(
         self,
@@ -341,6 +363,7 @@ class DatabaseManager:
         self.db = None
         self.repo_url_or_path = None
         self.repo_paths = None
+        self.embedder_type_used = None
 
     def _create_repo(
         self,
@@ -433,9 +456,14 @@ class DatabaseManager:
                 return 0
             return 0
 
+        def _usable_count(docs: List[Document]) -> int:
+            return sum(1 for doc in docs if _embedding_vector_length(doc) > 0)
+
         # Handle backward compatibility
         if embedder_type is None and is_ollama_embedder is not None:
             embedder_type = "ollama" if is_ollama_embedder else None
+        requested_type = embedder_type
+        db_path = self.repo_paths["save_db_file"] if self.repo_paths else None
         # check the database
         if self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
             logger.info("Loading existing database...")
@@ -460,7 +488,15 @@ class DatabaseManager:
                             "Existing database contains no usable embeddings. Rebuilding embeddings..."
                         )
                     else:
-                        return documents
+                        marker = _read_embedder_marker(db_path)
+                        if marker == "none" or marker == requested_type or marker is None:
+                            self.embedder_type_used = marker or requested_type
+                            return documents
+                        logger.info(
+                            "Existing database was built with %s embeddings; rebuilding for %s",
+                            marker,
+                            requested_type,
+                        )
             except Exception as e:
                 logger.error(f"Error loading existing database: {e}")
                 # Continue to create a new database
@@ -475,11 +511,29 @@ class DatabaseManager:
             included_dirs=included_dirs,
             included_files=included_files,
         )
+        used_type = requested_type
         self.db = transform_documents_and_save_to_db(
-            documents, self.repo_paths["save_db_file"], embedder_type=embedder_type
+            documents, self.repo_paths["save_db_file"], embedder_type=used_type
         )
         logger.info(f"Total documents: {len(documents)}")
         transformed_docs = self.db.get_transformed_data(key="split_and_embed")
+        if (
+            documents
+            and transformed_docs
+            and _usable_count(transformed_docs) == 0
+            and used_type != "none"
+        ):
+            logger.warning(
+                "Embedding API produced no usable vectors; rebuilding with the local hash embedder"
+            )
+            used_type = "none"
+            self.db = transform_documents_and_save_to_db(
+                documents, self.repo_paths["save_db_file"], embedder_type=used_type
+            )
+            transformed_docs = self.db.get_transformed_data(key="split_and_embed")
+        if db_path and used_type:
+            _write_embedder_marker(db_path, used_type)
+        self.embedder_type_used = used_type
         logger.info(f"Total transformed documents: {len(transformed_docs)}")
         return transformed_docs
 

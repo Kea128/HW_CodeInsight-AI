@@ -20,6 +20,14 @@ from api.rag.pipeline import DatabaseManager
 
 logger = get_logger(__name__)
 
+NO_SOURCE_FILES_ERROR = (
+    "同步副本里没有可分析的代码文件。请先完成同步，或添加子分析目录后再开始分析。"
+)
+NO_EMBEDDINGS_ERROR = (
+    "无法为代码建立检索索引。自定义接口通常不提供嵌入模型。"
+    "请在设置里把嵌入方式改为「不使用向量」，或改用本机 Ollama。"
+)
+
 # Maximum concurrent RAG preparing count
 _RAG_PREPARE_SEMAPHORE: asyncio.Semaphore | None = None
 
@@ -183,6 +191,21 @@ class RAG(adal.Component):
         self.embedder = get_embedder(embedder_type=self.embedder_type)
         self.initialize_db_manager()
 
+    def _switch_to_local_embedder(self) -> None:
+        self.embedder_type = "none"
+        self.is_ollama_embedder = False
+        self.embedder = get_embedder(embedder_type="none")
+
+    @staticmethod
+    def _embed_documents_locally(documents: list[Document]) -> list[Document]:
+        from api.clients.local_embedder import LOCAL_EMBEDDING_DIM, hash_embed_text
+
+        for document in documents:
+            document.vector = hash_embed_text(
+                document.text or "", LOCAL_EMBEDDING_DIM
+            )
+        return documents
+
     def initialize_db_manager(self):
         """Initialize the database manager with local storage"""
         self.db_manager = DatabaseManager()
@@ -280,16 +303,36 @@ class RAG(adal.Component):
             space_id=space_id,
         )
         logger.info(f"Loaded {len(self.transformed_docs)} documents for retrieval")
+        used = getattr(self.db_manager, "embedder_type_used", None)
+        if used == "none" and self.embedder_type != "none":
+            self._switch_to_local_embedder()
 
         # Validate and filter embeddings to ensure consistent sizes
-        self.transformed_docs = self._validate_and_filter_embeddings(
-            self.transformed_docs
-        )
+        valid_docs = self._validate_and_filter_embeddings(self.transformed_docs)
+        if not valid_docs:
+            if not self.transformed_docs:
+                raise ValueError(NO_SOURCE_FILES_ERROR)
+            logger.warning(
+                "Remote embeddings missing; falling back to the local hash embedder"
+            )
+            try:
+                from api.services.oplog import log_event
+
+                log_event(
+                    "embedder_fallback",
+                    "上游嵌入不可用，已改用本地向量",
+                    level="warn",
+                    from_type=self.embedder_type,
+                )
+            except Exception:
+                pass
+            self._switch_to_local_embedder()
+            self.transformed_docs = self._embed_documents_locally(self.transformed_docs)
+            valid_docs = self._validate_and_filter_embeddings(self.transformed_docs)
+        self.transformed_docs = valid_docs
 
         if not self.transformed_docs:
-            raise ValueError(
-                "No valid documents with embeddings found. Cannot create retriever."
-            )
+            raise ValueError(NO_EMBEDDINGS_ERROR)
 
         logger.info(
             f"Using {len(self.transformed_docs)} documents with valid embeddings for retrieval"

@@ -13,7 +13,15 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert 'id="connect-ubuntu-button"' in html
     assert 'value="openai_compatible"' in html
     assert 'id="model-base-url"' in html
+    assert "自定义接口通常没有 text-embedding-3-small" in html
+    assert 'id="embedder-mode"' in html
+    assert 'id="operation-log"' in html
+    assert 'id="copy-operation-log-button"' in html
+    assert "/desktop/logs" in script
     assert 'id="knowledge-space-list"' in html
+    assert 'id="task-list"' in html
+    assert "function taskLocation" in script
+    assert "card-path" in script
     assert 'id="ask-form"' in html
     assert "/knowledge/spaces" in script
     assert "/desktop/models/discover" in script

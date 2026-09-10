@@ -262,13 +262,14 @@
           </div>
           <label>嵌入方式
             <select id="embedder-mode">
-              <option value="auto">自动（优先同一地址）</option>
+              <option value="auto">自动（自定义接口用本地向量）</option>
               <option value="openai">OpenAI 兼容嵌入</option>
               <option value="ollama">本机 Ollama</option>
               <option value="google">Google</option>
-              <option value="none">不使用向量</option>
+              <option value="none">不使用向量（本地）</option>
             </select>
           </label>
+          <p class="hint">自定义接口通常没有 text-embedding-3-small。选「自动」或「不使用向量」时用本地关键词向量，分析与问答仍可用。</p>
           <label>页并发生成数<input id="wiki-page-concurrency" type="number" min="1" max="8" value="4" /></label>
         </div>
         <label id="api-key-label">API Key<input id="model-api-key" type="password" autocomplete="off" placeholder="输入后保存在本机" /></label>
@@ -289,6 +290,16 @@
         </label>
         <p id="ollama-tier-hint" class="hint"></p>
         <button id="settings-install-ollama-button" type="button" class="secondary">安装或升级本地模型</button>
+      </div>
+      <div class="settings-block settings-section">
+        <h3>操作日志</h3>
+        <p class="hint">记录同步、嵌入、自定义 API 调用和分析过程。复制后发给开发者即可定位。不含密码和 API Key。</p>
+        <pre id="operation-log" class="operation-log" aria-label="操作日志">打开设置后自动加载。</pre>
+        <div class="row">
+          <button id="refresh-operation-log-button" type="button" class="secondary">刷新日志</button>
+          <button id="copy-operation-log-button" type="button" class="secondary">复制日志</button>
+          <button id="open-operation-log-button" type="button" class="secondary">打开日志目录</button>
+        </div>
       </div>
       <div class="settings-block settings-section">
         <h3>应用更新</h3>

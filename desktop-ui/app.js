@@ -392,7 +392,7 @@ async function loadWikiResult(task) {
     localStorage.setItem("codeinsight-active-space", activeSpaceId);
   }
   openDrawer("result-panel");
-  title.textContent = `${task.owner}/${task.repo} 分析结果`;
+  title.textContent = `${taskLocation(task) || task.name || `${task.owner}/${task.repo}`} 分析结果`;
   message.className = "message";
   message.textContent = "正在读取已生成页面…";
   pagesContainer.replaceChildren();
@@ -432,7 +432,7 @@ async function loadTaskDetails(task) {
   const message = document.querySelector("#result-message");
   const pagesContainer = document.querySelector("#result-pages");
   openDrawer("result-panel");
-  title.textContent = `${task.name || `${task.owner}/${task.repo}`} 任务详情`;
+  title.textContent = `${taskLocation(task) || task.name || `${task.owner}/${task.repo}`} 任务详情`;
   message.className = "message";
   message.textContent = "正在读取任务详情…";
   pagesContainer.replaceChildren();
@@ -563,6 +563,32 @@ function renderEmptyState(container, title, hint) {
   container.replaceChildren(wrap);
 }
 
+function taskLocation(task) {
+  if (task.location) return task.location;
+  const spaceId = String(task.id || "").startsWith("space_")
+    ? task.id.slice("space_".length)
+    : "";
+  const space = latestKnowledgeSpaces.find((item) => item.space_id === spaceId);
+  if (space) {
+    const dirs = (space.included_dirs || []).filter(Boolean);
+    if (space.parent_workspace) {
+      return dirs.length
+        ? `${space.parent_workspace} / ${dirs.join(", ")}`
+        : space.parent_workspace;
+    }
+    if (space.label) return space.label;
+  }
+  const project = latestContinuousProjects.find(
+    (item) => item.last_task_id === task.id || item.request?.repo === task.repo,
+  );
+  const localPath = project?.request?.repo_url || project?.request?.localPath;
+  if (localPath) {
+    const dirs = (project.request?.included_dirs || []).filter(Boolean);
+    return dirs.length ? `${localPath} / ${dirs.join(", ")}` : localPath;
+  }
+  return "";
+}
+
 function renderTask(task) {
   const card = document.createElement("article");
   card.className = "task";
@@ -570,11 +596,16 @@ function renderTask(task) {
   const head = document.createElement("div");
   head.className = "card-head";
   const title = document.createElement("h3");
-  title.textContent = task.name || `${task.owner}/${task.repo}`;
+  const location = taskLocation(task);
+  title.textContent = task.repo || task.name || `${task.owner}/${task.repo}`;
   const badge = document.createElement("span");
   badge.className = `badge ${taskStatusKind(task.status)}`;
   badge.textContent = taskStatusLabel(task.status);
   head.append(title, badge);
+  const path = document.createElement("p");
+  path.className = "card-path";
+  path.textContent = location || task.name || `${task.owner}/${task.repo}`;
+  path.title = path.textContent;
   const status = document.createElement("p");
   status.className = "meta";
   status.textContent = `${task.pages_done}/${task.pages_total || "?"} 页`;
@@ -584,7 +615,7 @@ function renderTask(task) {
   const percent = task.pages_total ? (task.pages_done / task.pages_total) * 100 : 3;
   bar.style.width = `${Math.min(100, percent)}%`;
   progress.append(bar);
-  detail.append(head, status, progress);
+  detail.append(head, path, status, progress);
   if (task.error) {
     const error = document.createElement("p");
     error.className = "task-error";
@@ -774,7 +805,11 @@ function renderRemoteProject(project) {
   card.className = "remote-project";
   const detail = document.createElement("div");
   const title = document.createElement("h3");
-  title.textContent = `${project.username}@${project.host}:${project.remote_path}`;
+  title.textContent = `${project.username}@${project.host}`;
+  const path = document.createElement("p");
+  path.className = "card-path";
+  path.textContent = project.remote_path;
+  path.title = `${project.username}@${project.host}:${project.remote_path}`;
   const status = document.createElement("p");
   status.textContent = project.last_error
     ? `${stageLabels[project.stage] || project.stage}：${project.last_error}`
@@ -811,7 +846,7 @@ function renderRemoteProject(project) {
   progressLine.textContent = progressText;
   const extras = document.createElement("details");
   extras.className = "card-extras";
-  extras.open = ["connecting", "syncing", "analyzing", "failed"].includes(project.stage);
+  extras.open = ["connecting", "syncing", "failed"].includes(project.stage);
   const summary = document.createElement("summary");
   summary.textContent = "连接与同步详情";
   const fingerprint = document.createElement("p");
@@ -823,7 +858,7 @@ function renderRemoteProject(project) {
   syncStats.className = "fingerprint";
   syncStats.textContent = `排除 ${project.files_excluded || 0} · 超大 ${project.files_oversize || 0} · 跳过链接 ${project.symlinks_skipped || 0}`;
   extras.append(summary, fingerprint, syncStats);
-  detail.append(title, status, flow, counts);
+  detail.append(title, path, status, flow, counts);
   if (progressLine.textContent) detail.append(progressLine);
   if (["connecting", "syncing", "analyzing"].includes(project.stage)) {
     const progress = document.createElement("div");
@@ -1503,8 +1538,42 @@ document.querySelector("#connect-ubuntu-button").addEventListener("click", () =>
   openDrawer("project-drawer");
   selectSource(true);
 });
+async function loadOperationLog() {
+  const box = document.querySelector("#operation-log");
+  if (!box) return;
+  try {
+    const payload = await api("/desktop/logs?limit=200");
+    box.textContent = payload.text || "暂无操作记录。连接 Ubuntu 或开始分析后会写在这里。";
+    box.scrollTop = box.scrollHeight;
+  } catch (error) {
+    box.textContent = `读取操作日志失败：${errorMessage(error)}`;
+  }
+}
+
 document.querySelector("#settings-button").addEventListener("click", () => {
   openDrawer("settings-drawer");
+  loadOperationLog();
+});
+document.querySelector("#refresh-operation-log-button").addEventListener("click", () => {
+  loadOperationLog();
+});
+document.querySelector("#copy-operation-log-button").addEventListener("click", async () => {
+  const text = document.querySelector("#operation-log")?.textContent || "";
+  try {
+    await navigator.clipboard.writeText(text);
+    window.alert("操作日志已复制。发给开发者时请整段粘贴。");
+  } catch {
+    window.prompt("请复制以下操作日志：", text);
+  }
+});
+document.querySelector("#open-operation-log-button").addEventListener("click", async () => {
+  try {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!invoke) throw new Error("日志目录仅可在桌面应用中打开");
+    await invoke("open_daemon_log_directory");
+  } catch (error) {
+    window.alert(errorMessage(error));
+  }
 });
 document.querySelector("#drawer-backdrop").addEventListener("click", () => closeDrawers());
 document.querySelectorAll("[data-close-drawer]").forEach((button) => {
@@ -1715,11 +1784,18 @@ document.querySelector("#copy-engine-diagnostics-button").addEventListener("clic
     `lastError=${engineLastError || "none"}`,
     `userAgent=${navigator.userAgent}`,
   ].join("\n");
+  let text = diagnostics;
   try {
-    await navigator.clipboard.writeText(diagnostics);
+    const payload = await api("/desktop/logs?limit=80");
+    text += `\n\n--- operation.log ---\n${payload.text || ""}`;
+  } catch (error) {
+    text += `\n\noperation.log: ${errorMessage(error)}`;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
     document.querySelector("#engine-recovery-message").textContent = "诊断信息已复制（不包含令牌或密码）。";
   } catch {
-    window.prompt("请复制以下诊断信息：", diagnostics);
+    window.prompt("请复制以下诊断信息：", text);
   }
 });
 

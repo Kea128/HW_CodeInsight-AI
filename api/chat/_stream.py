@@ -42,6 +42,17 @@ class ChatStreamer(ABC):
     ) -> "ChatStreamer":
         model = model or model_config.get("model")
         logger.info("Using %s with model: %s", provider, model)
+        try:
+            from api.services.oplog import log_event
+
+            log_event(
+                "llm_select",
+                f"准备调用 {provider} / {model}",
+                provider=provider,
+                model=model,
+            )
+        except Exception:
+            pass
         registered = ChatStreamer._registry.get(provider, None)
         if registered:
             return registered(model=model, model_config=model_config)
@@ -156,13 +167,34 @@ class _OpenAICompatStreamer(ChatStreamer):
         )
 
     async def respond_stream(self, prompt: str) -> AsyncIterator[str]:
+        from api.services.oplog import log_event
+
         api_kwargs = self.client.convert_inputs_to_api_kwargs(
             input=prompt, model_kwargs=self.model_kwargs, model_type=ModelType.LLM
         )
-        response: "AsyncStream[ChatCompletionChunk]" = await self.client.acall(
-            api_kwargs=api_kwargs,
-            model_type=ModelType.LLM,
+        log_event(
+            "llm_request",
+            f"{self.provider} → {self.model_kwargs.get('model')}",
+            provider=self.provider,
+            model=self.model_kwargs.get("model"),
+            base_url=getattr(self.client, "base_url", None),
+            api="chat.completions" if self.provider == "openai_compatible" else "openai",
         )
+        try:
+            response: "AsyncStream[ChatCompletionChunk]" = await self.client.acall(
+                api_kwargs=api_kwargs,
+                model_type=ModelType.LLM,
+            )
+        except Exception as error:
+            log_event(
+                "llm_error",
+                str(error)[:400],
+                level="error",
+                provider=self.provider,
+                model=self.model_kwargs.get("model"),
+                base_url=getattr(self.client, "base_url", None),
+            )
+            raise
 
         async for chunk in response:
             if (
@@ -181,9 +213,9 @@ class OpenAICompatibleChatStreamer(_OpenAICompatStreamer):
     )
 
     def _build_client(self):
-        from api.clients import OpenAIClient
+        from api.clients import CompatibleChatClient
 
-        return OpenAIClient()
+        return CompatibleChatClient()
 
 
 class OpenAIChatStreamer(_OpenAICompatStreamer):

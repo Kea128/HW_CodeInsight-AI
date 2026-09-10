@@ -62,6 +62,20 @@ def _resolve_desktop_model(request: WikiTaskRequest) -> WikiTaskRequest:
     return request
 
 
+def public_task_location(request: WikiTaskRequest) -> str | None:
+    """Return a UI location that never leaks a Windows Ubuntu-mirror path."""
+    if request.display_location:
+        return request.display_location
+    dirs = [item for item in (request.included_dirs or []) if item]
+    suffix = f" / {', '.join(dirs)}" if dirs else ""
+    owner = request.owner or ""
+    if "@" in owner:
+        return f"{owner}/{request.repo}{suffix}" if suffix else None
+    if request.type == "local" and request.repo_url:
+        return f"{request.repo_url}{suffix}"
+    return None
+
+
 def _env_int(name, default: int) -> int:
     try:
         return int(os.environ.get(name, default))
@@ -206,6 +220,7 @@ class WikiTask(BaseModel):
             wiki_structure=self.wiki_structure,
             error=self.error,
             submitted_at=self.submitted_at,
+            location=public_task_location(r),
         )
 
     def to_summary(self) -> WikiTaskSummary:
@@ -222,6 +237,7 @@ class WikiTask(BaseModel):
             current_page_ids=self.current_page_ids,
             error=self.error,
             submitted_at=self.submitted_at,
+            location=public_task_location(r),
         )
 
 
@@ -414,6 +430,16 @@ async def generate_repo_wiki(task: WikiTask) -> None:
     """Drive one task through the state machine (SPEC.md §7)."""
     r = task.request
     try:
+        from api.services.oplog import log_event
+
+        log_event(
+            "wiki_start",
+            f"开始分析 {r.owner}/{r.repo}",
+            provider=r.provider,
+            model=r.model,
+            space_id=r.space_id,
+            location=getattr(r, "display_location", None),
+        )
         await task.control_point()
         repo = Repo(r.repo_url, r.type, access_token=r.token)
 
@@ -462,6 +488,19 @@ async def generate_repo_wiki(task: WikiTask) -> None:
         task.current_page_ids = []
         task.persist("failed")
         logger.exception("Wiki task failed for %s", task.repo_key)
+        try:
+            from api.services.oplog import log_event
+
+            log_event(
+                "wiki_failed",
+                str(e)[:400],
+                level="error",
+                provider=r.provider,
+                model=r.model,
+                space_id=r.space_id,
+            )
+        except Exception:
+            pass
 
 
 async def _save(
@@ -597,6 +636,7 @@ async def _determine_structure(task: WikiTask) -> WikiStructureModel:
         excluded_files=r.excluded_files,
         included_dirs=r.included_dirs,
         included_files=r.included_files,
+        space_id=r.space_id,
         messages=[ChatMessage(role="user", content=prompt)],
     )
 
@@ -652,6 +692,7 @@ async def _generate_page(task: WikiTask, page: WikiPage) -> WikiPage:
         excluded_files=r.excluded_files,
         included_dirs=r.included_dirs,
         included_files=r.included_files,
+        space_id=r.space_id,
         messages=[ChatMessage(role="user", content=prompt)],
     )
 

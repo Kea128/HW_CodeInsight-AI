@@ -316,6 +316,23 @@ async def test_public_dict_hides_token():
     assert "token" not in d
     assert "SECRET" not in str(d)
     assert d["name"] == "o/r" and d["status"] == "pending"
+    assert d.get("location") in {None, "https://github.com/o/r"}
+
+
+async def test_summary_uses_display_location_not_mirror_path():
+    task = _req(
+        type="local",
+        owner="gyk@10.39.48.26",
+        repo="br-feature-ADS-truck-0820",
+        repo_url="C:/Users/Administrator/AppData/Local/CodeInsight-AI/mirrors/demo",
+        display_location="gyk@10.39.48.26:/home/WorkSpace/YinWang/br_feature_ADS_truck_0820",
+    )
+    summary = task.to_summary()
+    assert (
+        summary.location
+        == "gyk@10.39.48.26:/home/WorkSpace/YinWang/br_feature_ADS_truck_0820"
+    )
+    assert "AppData" not in (summary.location or "")
 
 
 async def test_paused_control_point_does_not_repeat_persistence_writes():

@@ -30,6 +30,14 @@
       "dimensions": 256
     }
   },
+  "embedder_none": {
+    "client_class": "LocalHashEmbedderClient",
+    "batch_size": 256,
+    "model_kwargs": {
+      "model": "local-hash",
+      "dimensions": 256
+    }
+  },
   "retriever": {
     "top_k": 20
   },
