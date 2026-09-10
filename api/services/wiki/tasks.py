@@ -484,7 +484,13 @@ async def generate_repo_wiki(task: WikiTask) -> None:
         )
     except Exception as e:
         task.status = TaskStatus.FAILED
-        task.error = str(e)
+        message = str(e)
+        if "No valid documents with embeddings" in message:
+            message = (
+                "无法为代码建立检索索引。自定义接口通常不提供嵌入模型。"
+                "请在设置里把嵌入方式改为「不使用向量」，或改用本机 Ollama。"
+            )
+        task.error = message
         task.current_page_ids = []
         task.persist("failed")
         logger.exception("Wiki task failed for %s", task.repo_key)
@@ -493,7 +499,7 @@ async def generate_repo_wiki(task: WikiTask) -> None:
 
             log_event(
                 "wiki_failed",
-                str(e)[:400],
+                message[:400],
                 level="error",
                 provider=r.provider,
                 model=r.model,

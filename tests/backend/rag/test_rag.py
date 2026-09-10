@@ -110,3 +110,34 @@ def test_prepare_retriever_falls_back_when_embeddings_empty(monkeypatch):
     assert rag.transformed_docs
     assert all(len(document.vector) == LOCAL_EMBEDDING_DIM for document in rag.transformed_docs)
     assert rag.retriever is not None
+
+
+def test_prepare_retriever_falls_back_when_faiss_rejects_vectors(monkeypatch):
+    docs = [
+        Document(text="fn analyze() {}", vector=[0.1, 0.2], meta_data={}),
+    ]
+    calls = {"n": 0}
+
+    def fake_prepare(self, *args, **kwargs):
+        self.embedder_type_used = "openai"
+        return docs
+
+    class FlakyRetriever:
+        def __init__(self, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError(
+                    "No valid documents with embeddings found. Cannot create retriever"
+                )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "api.rag.rag.DatabaseManager.prepare_database",
+        fake_prepare,
+    )
+    monkeypatch.setattr("api.rag.rag.FAISSRetriever", FlakyRetriever)
+    rag = RAG(provider="openai")
+    rag.prepare_retriever("/tmp/remote-mirror")
+    assert calls["n"] == 2
+    assert rag.embedder_type == "none"
+    assert rag.retriever is not None

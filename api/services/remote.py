@@ -34,6 +34,15 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+
+def _oplog(event: str, message: str, *, level: str = "info", **data: Any) -> None:
+    try:
+        from api.services.oplog import log_event
+
+        log_event(event, message, level=level, **data)
+    except Exception:
+        logger.exception("operation log write failed: %s", event)
+
 SYNC_LOOP_SECONDS = 2
 MAX_REMOTE_FILE_BYTES = 100 * 1024 * 1024
 SFTP_DOWNLOAD_CHUNK_BYTES = 256 * 1024
@@ -803,18 +812,13 @@ class RemoteSyncManager:
     async def _analyze_locked(self, project: dict[str, Any]) -> None:
         if not self._apply_current_desktop_model(project):
             raise RemoteProjectError("请先在设置中配置可用的 AI")
-        try:
-            from api.services.oplog import log_event
-
-            log_event(
-                "analyze_start",
-                f"开始分析 {project.get('username')}@{project.get('host')}:{project.get('remote_path')}",
-                provider=project.get("provider"),
-                model=project.get("model"),
-                host=project.get("host"),
-            )
-        except Exception:
-            pass
+        _oplog(
+            "analyze_start",
+            f"开始分析 {project.get('username')}@{project.get('host')}:{project.get('remote_path')}",
+            provider=project.get("provider"),
+            model=project.get("model"),
+            host=project.get("host"),
+        )
         space = self._upsert_scope_space(project, [])
         project["progress_message"] = "正在启动分析任务…"
         self._save_stage(project, "analyzing")
@@ -828,6 +832,14 @@ class RemoteSyncManager:
             if task_id and hasattr(self.store, "set_knowledge_space_task"):
                 self.store.set_knowledge_space_task(space.space_id, task_id)
         except Exception as error:
+            _oplog(
+                "analyze_failed",
+                str(error)[:400],
+                level="error",
+                provider=project.get("provider"),
+                model=project.get("model"),
+                host=project.get("host"),
+            )
             self._save_stage(project, "failed", str(error))
             raise
 
@@ -961,9 +973,22 @@ class RemoteSyncManager:
                 project["current_path"] = project["remote_path"]
                 self._save_stage(project, "connecting")
                 self._save_stage(project, "syncing")
+                _oplog(
+                    "sync_start",
+                    f"开始同步 {project.get('username')}@{project.get('host')}:{project.get('remote_path')}",
+                    host=project.get("host"),
+                    remote_path=project.get("remote_path"),
+                )
 
                 def persist_progress(result: MirrorResult) -> None:
-                    project.update(result.as_stats())
+                    stats = result.as_stats()
+                    if result.files_seen == 0 and result.dirs_seen == 0:
+                        stats.pop("files_seen", None)
+                        stats.pop("dirs_seen", None)
+                        stats.pop("files_excluded", None)
+                        stats.pop("files_oversize", None)
+                        stats.pop("symlinks_skipped", None)
+                    project.update(stats)
                     project["progress_updated_at"] = int(time.time() * 1000)
                     self.store.save_remote_project(project)
 
@@ -987,10 +1012,25 @@ class RemoteSyncManager:
                 self._failures.pop(project_id, None)
                 self._retry_after.pop(project_id, None)
                 self._save_stage(project, "ready_for_analysis")
+                _oplog(
+                    "sync_ok",
+                    f"同步完成，{result.files_seen} 个文件，{result.dirs_seen} 个目录",
+                    host=project.get("host"),
+                    files_seen=result.files_seen,
+                    dirs_seen=result.dirs_seen,
+                    remote_path=project.get("remote_path"),
+                )
                 if analyze_when_ready:
                     await self._analyze_locked(project)
                 return self._status(project)
             except Exception as error:  # noqa: BLE001 - persisted for UI diagnostics
+                _oplog(
+                    "sync_failed",
+                    str(error)[:400],
+                    level="error",
+                    host=project.get("host"),
+                    remote_path=project.get("remote_path"),
+                )
                 self._save_stage(project, "failed", str(error))
                 failures = self._failures.get(project_id, 0) + 1
                 self._failures[project_id] = failures

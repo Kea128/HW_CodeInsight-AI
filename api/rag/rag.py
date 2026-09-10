@@ -196,6 +196,15 @@ class RAG(adal.Component):
         self.is_ollama_embedder = False
         self.embedder = get_embedder(embedder_type="none")
 
+    def _create_faiss_retriever(self) -> None:
+        self.retriever = FAISSRetriever(
+            **configs["retriever"],
+            embedder=self.embedder,
+            documents=self.transformed_docs,
+            document_map_func=lambda doc: doc.vector,
+        )
+        logger.info("FAISS retriever created successfully")
+
     @staticmethod
     def _embed_documents_locally(documents: list[Document]) -> list[Document]:
         from api.clients.local_embedder import LOCAL_EMBEDDING_DIM, hash_embed_text
@@ -339,33 +348,42 @@ class RAG(adal.Component):
         )
 
         try:
-            # Use the appropriate embedder for retrieval
-            self.retriever = FAISSRetriever(
-                **configs["retriever"],
-                embedder=self.embedder,
-                documents=self.transformed_docs,
-                document_map_func=lambda doc: doc.vector,
-            )
-            logger.info("FAISS retriever created successfully")
+            self._create_faiss_retriever()
         except Exception as e:
-            logger.error(f"Error creating FAISS retriever: {str(e)}")
-            # Try to provide more specific error information
-            if "All embeddings should be of the same size" in str(e):
-                logger.error(
-                    "Embedding size validation failed. This suggests there are still inconsistent embedding sizes."
+            message = str(e)
+            logger.error(f"Error creating FAISS retriever: {message}")
+            if self.embedder_type != "none" and (
+                "No valid documents with embeddings" in message
+                or "All embeddings should be of the same size" in message
+            ):
+                logger.warning(
+                    "FAISS rejected remote embeddings; falling back to the local hash embedder"
                 )
-                # Log embedding sizes for debugging
-                sizes = []
-                for i, doc in enumerate(
-                    self.transformed_docs[:10]
-                ):  # Check first 10 docs
-                    if hasattr(doc, "vector") and doc.vector is not None:
-                        try:
-                            size = _get_document_vector_size(doc) or "unknown"
-                            sizes.append(f"doc_{i}: {size}")
-                        except Exception:
-                            sizes.append(f"doc_{i}: error")
-                logger.error(f"Sample embedding sizes: {', '.join(sizes)}")
+                try:
+                    from api.services.oplog import log_event
+
+                    log_event(
+                        "embedder_fallback",
+                        "上游嵌入无法建索引，已改用本地向量",
+                        level="warn",
+                        from_type=self.embedder_type,
+                        error=message[:200],
+                    )
+                except Exception:
+                    pass
+                self._switch_to_local_embedder()
+                self.transformed_docs = self._embed_documents_locally(
+                    self.transformed_docs
+                )
+                self.transformed_docs = self._validate_and_filter_embeddings(
+                    self.transformed_docs
+                )
+                if not self.transformed_docs:
+                    raise ValueError(NO_EMBEDDINGS_ERROR) from e
+                self._create_faiss_retriever()
+                return
+            if "No valid documents with embeddings" in message:
+                raise ValueError(NO_EMBEDDINGS_ERROR) from e
             raise
 
     async def aprepare_retriever(

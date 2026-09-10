@@ -238,7 +238,9 @@ describe("desktop workspace UI", () => {
     expect(Number(cols[0].style.flexGrow)).toBeCloseTo(333.333, 2);
     document.querySelector("#settings-button").click();
     await vi.waitFor(() => {
+      expect(document.querySelector("#operation-log-path").textContent).toMatch(/operation\.log/);
       expect(document.querySelector("#operation-log").value).toContain("同步完成");
+      expect(document.querySelector("#operation-log").value).toContain("CodeInsight-AI");
       expect(document.querySelector("#operation-log").value).not.toMatch(/not found/i);
     });
   });

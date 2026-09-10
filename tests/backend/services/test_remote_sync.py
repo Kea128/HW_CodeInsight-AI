@@ -400,6 +400,10 @@ async def test_create_stores_password_only_in_credentials(monkeypatch, tmp_path)
     assert "credential_id" not in status
     assert continuous.requests == []
     assert project["stage"] == "ready_for_analysis"
+    from api.services.oplog import export_text
+
+    assert "sync_ok" in export_text()
+    assert "2 个文件" in export_text()
 
 
 @pytest.mark.asyncio

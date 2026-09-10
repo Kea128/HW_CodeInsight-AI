@@ -1579,6 +1579,37 @@ function formatOperationLogLines(text) {
   }).filter(Boolean).join("\n");
 }
 
+function defaultLogDirectory() {
+  if (engineLogPath) return String(engineLogPath).replace(/[\\/]daemon\.log$/i, "");
+  return "%LOCALAPPDATA%\\CodeInsight-AI";
+}
+
+function formatLogLocation(directory) {
+  const root = String(directory || defaultLogDirectory()).replace(/[\\/]+$/, "");
+  const sep = root.includes("/") && !root.includes("\\") ? "/" : "\\";
+  return {
+    root,
+    operation: `${root}${sep}operation.log`,
+    daemon: `${root}${sep}daemon.log`,
+  };
+}
+
+function applyLogLocation(directory) {
+  const loc = formatLogLocation(directory);
+  const pathEl = document.querySelector("#operation-log-path");
+  if (pathEl) pathEl.textContent = `日志在 ${loc.root}（operation.log / daemon.log）`;
+  return loc;
+}
+
+function logLocationHeader(directory) {
+  const loc = applyLogLocation(directory);
+  return [
+    `日志目录：${loc.root}`,
+    `操作日志：${loc.operation}`,
+    `引擎日志：${loc.daemon}`,
+  ].join("\n");
+}
+
 async function readOperationLogFromHost() {
   const invoke = window.__TAURI__?.core?.invoke;
   if (!invoke) return "";
@@ -1586,22 +1617,23 @@ async function readOperationLogFromHost() {
   return formatOperationLogLines(text);
 }
 
-async function fetchOperationLogText() {
+async function fetchOperationLogPayload() {
   const paths = ["/desktop/logs?limit=200", "/desktop/operation-log?limit=200"];
   let lastError = null;
   for (const path of paths) {
     try {
       const payload = await api(path);
-      if (payload?.text) return payload.text;
-      if (Array.isArray(payload?.events) && payload.events.length) {
-        return payload.events.map((record) => {
+      let text = "";
+      if (payload?.text) text = payload.text;
+      else if (Array.isArray(payload?.events) && payload.events.length) {
+        text = payload.events.map((record) => {
           const extra = record.data && Object.keys(record.data).length
             ? ` ${JSON.stringify(record.data)}`
             : "";
           return `${record.ts || ""} [${record.level || "info"}] ${record.event || ""}: ${record.message || ""}${extra}`.trim();
         }).filter(Boolean).join("\n");
       }
-      return "";
+      return { text, path: payload?.path || "" };
     } catch (error) {
       lastError = error;
     }
@@ -1666,22 +1698,41 @@ async function copyTextToClipboard(text) {
 }
 
 async function loadOperationLog() {
-  const empty = "暂无操作记录。连接 Ubuntu 或开始分析后会写在这里。";
+  let directory = defaultLogDirectory();
+  let text = "";
+  let readError = "";
   try {
-    const text = await fetchOperationLogText();
-    setOperationLogText(text || empty);
+    const payload = await fetchOperationLogPayload();
+    if (payload.path) {
+      directory = String(payload.path).replace(/[\\/]operation\.log$/i, "");
+    }
+    text = payload.text || "";
   } catch (error) {
+    readError = errorMessage(error);
+  }
+  if (!text) {
     try {
-      const text = await readOperationLogFromHost();
-      setOperationLogText(text || empty);
-    } catch {
-      if (error?.status === 404 || /not found/i.test(errorMessage(error))) {
-        setOperationLogText(`${empty}\n\n分析引擎暂未提供日志接口，可点「打开日志目录」查看 operation.log。`);
-      } else {
-        setOperationLogText(`读取操作日志失败：${errorMessage(error)}`);
-      }
+      const fileText = await readOperationLogFromHost();
+      if (fileText) text = fileText;
+    } catch (error) {
+      if (!readError) readError = errorMessage(error);
     }
   }
+  const header = logLocationHeader(directory);
+  if (text) {
+    setOperationLogText(`${header}\n\n${text}`);
+    return;
+  }
+  const empty = [
+    header,
+    "",
+    "暂无操作记录。连接 Ubuntu 或开始分析后会写在这里。",
+    "若已经同步或分析过，请点「打开日志目录」，把 operation.log 和 daemon.log 发给开发者。",
+  ];
+  if (readError && !/not found/i.test(readError)) {
+    empty.push(`读取失败：${readError}`);
+  }
+  setOperationLogText(empty.join("\n"));
 }
 
 document.querySelector("#settings-button").addEventListener("click", () => {

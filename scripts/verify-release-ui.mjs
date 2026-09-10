@@ -17,6 +17,8 @@ function sliceFn(name, nextName) {
 }
 
 assert.match(html, /<textarea id="operation-log"/);
+assert.match(html, /id="operation-log-path"/);
+assert.match(html, /operation\.log/);
 assert.match(html, /id="copy-operation-log-button"/);
 assert.match(html, /id="workbench-splitter-1"/);
 assert.match(html, /id="workbench-splitter-2"/);
