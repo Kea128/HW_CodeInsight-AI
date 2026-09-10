@@ -77,7 +77,8 @@ fn tail_text_file(path: &std::path::Path, limit: usize) -> Result<String, String
     if !path.is_file() {
         return Ok(String::new());
     }
-    let text = std::fs::read_to_string(path).map_err(|error| describe_error("无法读取操作日志", error))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|error| describe_error("无法读取操作日志", error))?;
     let lines: Vec<&str> = text
         .lines()
         .map(str::trim)
