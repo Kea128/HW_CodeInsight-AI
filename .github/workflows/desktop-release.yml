@@ -231,7 +231,7 @@ jobs:
         with:
           tagName: desktop-v__VERSION__
           releaseName: "CodeInsight-AI Desktop v__VERSION__"
-          releaseBody: "Hotfix: verify the Ubuntu SSH login before saving a remote project, always re-probe the live host fingerprint, and keep connection errors on the add-project form."
+          releaseBody: "Desktop 0.2.18: require local verify:release before publish. Includes operation-log copy, equal workbench columns, and local subdirectory scan."
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
