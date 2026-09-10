@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
+import { createContext, runInContext } from "node:vm";
 
 const root = resolve(import.meta.dirname, "..");
 const html = readFileSync(resolve(root, "desktop-ui/index.html"), "utf8");
@@ -34,7 +35,7 @@ assert.match(rust, /fn tail_text_file/);
 const written = [];
 const created = [];
 const copySource = sliceFn("async function copyTextToClipboard", "async function loadOperationLog");
-globalThis.window = {
+const window = {
   __TAURI__: {
     core: {
       invoke: async (command, payload) => {
@@ -44,14 +45,14 @@ globalThis.window = {
     },
   },
 };
-globalThis.navigator = {
+const navigator = {
   clipboard: {
     writeText: async () => {
       throw new Error("blocked");
     },
   },
 };
-globalThis.document = {
+const document = {
   createElement() {
     const node = {
       value: "",
@@ -79,7 +80,12 @@ globalThis.document = {
   },
 };
 
-const copyTextToClipboard = new Function(`${copySource}; return copyTextToClipboard;`)();
+// Node 22+ exposes a read-only global navigator; run the helper in a VM sandbox.
+const sandbox = createContext({ window, navigator, document });
+const copyTextToClipboard = runInContext(
+  `${copySource}; copyTextToClipboard`,
+  sandbox,
+);
 await copyTextToClipboard("本机验证：同步完成\n第二行");
 assert.deepEqual(written, ["本机验证：同步完成\n第二行"]);
 

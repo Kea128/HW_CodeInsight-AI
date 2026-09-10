@@ -231,7 +231,7 @@ jobs:
         with:
           tagName: desktop-v__VERSION__
           releaseName: "CodeInsight-AI Desktop v__VERSION__"
-          releaseBody: "Desktop 0.2.18: require local verify:release before publish. Includes operation-log copy, equal workbench columns, and local subdirectory scan."
+          releaseBody: "Desktop 0.2.19: require local verify:release before publish. Includes operation-log copy, equal workbench columns, and local subdirectory scan."
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true

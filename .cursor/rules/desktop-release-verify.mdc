@@ -10,3 +10,4 @@ Before bumping `package.json` / `src-tauri` versions, creating a `desktop-v*` ta
 1. Run `npm run verify:release` (`scripts/verify-release.ps1`) and wait for exit code 0.
 2. Do not commit, tag, or push the release if any step failed or if `cargo` was missing.
 3. CI runs the same Python/UI gate via `./scripts/verify-release.ps1 -SkipRust` in `.github/workflows/desktop-release.yml`, then `cargo fmt` and `cargo test` in the host job.
+4. After pushing a `desktop-v*` tag, watch the GitHub Actions Desktop release run until it finishes. If it fails, fix, re-run `verify:release`, publish a new version/tag, and watch again. Do not stop after push.

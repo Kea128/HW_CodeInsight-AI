@@ -14,6 +14,9 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert "verify-release.ps1" in (
         ROOT / ".github" / "workflows" / "desktop-release.yml"
     ).read_text(encoding="utf-8")
+    ui_gate = (ROOT / "scripts" / "verify-release-ui.mjs").read_text(encoding="utf-8")
+    assert "createContext" in ui_gate
+    assert "globalThis.navigator =" not in ui_gate
     assert 'id="app-version"' in html
     assert 'id="settings-app-version"' in html
     assert 'id="connect-ubuntu-button"' in html
