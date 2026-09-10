@@ -29,6 +29,9 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert 'id="operation-log"' in html
     assert "<textarea id=\"operation-log\"" in html or "<textarea id='operation-log'" in html
     assert 'id="copy-operation-log-button"' in html
+    assert 'id="open-operation-log-file-button"' in html
+    assert 'id="open-daemon-log-file-button"' in html
+    assert "open_log_target" in script
     assert "function copyTextToClipboard" in script
     assert 'invoke("write_clipboard"' in script
     assert "window.prompt" not in script

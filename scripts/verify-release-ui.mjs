@@ -20,6 +20,9 @@ assert.match(html, /<textarea id="operation-log"/);
 assert.match(html, /id="operation-log-path"/);
 assert.match(html, /operation\.log/);
 assert.match(html, /id="copy-operation-log-button"/);
+assert.match(html, /id="open-operation-log-file-button"/);
+assert.match(html, /id="open-daemon-log-file-button"/);
+assert.match(script, /open_log_target/);
 assert.match(html, /id="workbench-splitter-1"/);
 assert.match(html, /id="workbench-splitter-2"/);
 assert.match(html, /id="remote-scope-detect-button"/);
@@ -98,7 +101,7 @@ assert.ok(
   "execCommand fallback was not used",
 );
 
-const formatSource = sliceFn("function formatOperationLogLines", "async function readOperationLogFromHost");
+const formatSource = sliceFn("function formatLogTimestamp", "async function readOperationLogFromHost");
 const formatOperationLogLines = new Function(`${formatSource}; return formatOperationLogLines;`)();
 assert.match(
   formatOperationLogLines(
@@ -109,7 +112,7 @@ assert.match(
       message: "同步完成",
     }),
   ),
-  /sync_ok: 同步完成/,
+  /2026-09-10 19:00:00 \[info\] sync_ok: 同步完成/,
 );
 
 console.log("verify-release-ui: ok");

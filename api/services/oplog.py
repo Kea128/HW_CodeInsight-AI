@@ -33,6 +33,17 @@ def operation_log_path() -> Path:
     return root / "CodeInsight-AI" / "operation.log"
 
 
+def _stamp_now() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def display_stamp(value: Any) -> str:
+    text = str(value or "").strip()
+    if "T" in text and len(text) >= 19:
+        return f"{text[0:10]} {text[11:19]}"
+    return text
+
+
 def _redact(value: Any) -> Any:
     if isinstance(value, dict):
         redacted = {}
@@ -52,7 +63,7 @@ def _redact(value: Any) -> Any:
 
 def log_event(event: str, message: str, *, level: str = "info", **data: Any) -> None:
     record = {
-        "ts": datetime.now().isoformat(timespec="seconds"),
+        "ts": _stamp_now(),
         "level": level,
         "event": event,
         "message": (message or "")[:500],
@@ -114,7 +125,7 @@ def export_text(limit: int = 300) -> str:
         extra = record.get("data") or {}
         suffix = f" {json.dumps(extra, ensure_ascii=False)}" if extra else ""
         lines.append(
-            f"{record.get('ts', '')} [{record.get('level', 'info')}] "
+            f"{display_stamp(record.get('ts', ''))} [{record.get('level', 'info')}] "
             f"{record.get('event', '')}: {record.get('message', '')}{suffix}"
         )
     return "\n".join(lines)

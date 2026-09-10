@@ -33,6 +33,9 @@ def test_operation_log_redacts_secrets(monkeypatch, tmp_path):
     assert events[-1]["data"]["api_key"] == "***"
     assert events[-1]["data"]["password"] == "***"
     assert events[-1]["data"]["model"] == "qwen-plus"
+    assert events[-1]["ts"].count("-") == 2
+    assert "T" not in events[-1]["ts"]
+    assert ":" in events[-1]["ts"]
     text = export_text()
     assert "sk-secret" not in text
     assert "qwen-plus" in text

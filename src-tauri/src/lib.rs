@@ -73,6 +73,41 @@ fn operation_log_file() -> std::path::PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("operation.log"))
 }
 
+fn ensure_parent_dir(path: &std::path::Path) -> Result<(), String> {
+    if let Some(directory) = path.parent() {
+        std::fs::create_dir_all(directory)
+            .map_err(|error| describe_error("无法创建分析引擎日志目录", error))?;
+    }
+    Ok(())
+}
+
+fn ensure_log_file(path: &std::path::Path) -> Result<(), String> {
+    ensure_parent_dir(path)?;
+    if !path.is_file() {
+        std::fs::write(path, "").map_err(|error| describe_error("无法创建日志文件", error))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_with_windows(path: &std::path::Path, as_directory: bool) -> Result<(), String> {
+    let displayed = path.to_string_lossy().into_owned();
+    // explorer.exe often returns 1 even after opening the folder.
+    let result = if as_directory {
+        std::process::Command::new("explorer")
+            .arg(&displayed)
+            .spawn()
+    } else {
+        std::process::Command::new("cmd")
+            .arg("/C")
+            .arg(format!("start \"\" \"{displayed}\""))
+            .spawn()
+    };
+    result
+        .map(|_| ())
+        .map_err(|error| describe_error("无法打开日志", error))
+}
+
 fn tail_text_file(path: &std::path::Path, limit: usize) -> Result<String, String> {
     if !path.is_file() {
         return Ok(String::new());
@@ -895,16 +930,57 @@ fn write_clipboard(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_daemon_log_directory(app: tauri::AppHandle) -> Result<(), String> {
-    let path = daemon_log_file();
-    let directory = path
-        .parent()
-        .ok_or_else(|| "无法定位分析引擎日志目录".to_string())?;
-    std::fs::create_dir_all(directory)
-        .map_err(|error| describe_error("无法创建分析引擎日志目录", error))?;
-    app.opener()
-        .open_path(directory.to_string_lossy().into_owned(), None::<&str>)
-        .map_err(|error| describe_error("无法打开分析引擎日志目录", error))
+fn open_daemon_log_directory(_app: tauri::AppHandle) -> Result<(), String> {
+    open_log_target("directory".to_string())
+}
+
+#[tauri::command]
+fn open_log_target(target: String) -> Result<(), String> {
+    match target.as_str() {
+        "directory" => {
+            let directory = daemon_log_file()
+                .parent()
+                .ok_or_else(|| "无法定位分析引擎日志目录".to_string())?
+                .to_path_buf();
+            ensure_parent_dir(&directory.join("daemon.log"))?;
+            #[cfg(windows)]
+            {
+                return open_with_windows(&directory, true);
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = directory;
+                return Err("当前系统不支持打开日志目录".to_string());
+            }
+        }
+        "operation" => {
+            let path = operation_log_file();
+            ensure_log_file(&path)?;
+            #[cfg(windows)]
+            {
+                return open_with_windows(&path, false);
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = path;
+                return Err("当前系统不支持打开操作日志".to_string());
+            }
+        }
+        "daemon" => {
+            let path = daemon_log_file();
+            ensure_log_file(&path)?;
+            #[cfg(windows)]
+            {
+                return open_with_windows(&path, false);
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = path;
+                return Err("当前系统不支持打开引擎日志".to_string());
+            }
+        }
+        _ => Err("未知日志目标".to_string()),
+    }
 }
 
 #[tauri::command]
@@ -944,6 +1020,7 @@ pub fn run() {
             read_operation_log,
             write_clipboard,
             open_daemon_log_directory,
+            open_log_target,
             restart_app,
             desktop_session_token,
             desktop_app_version
@@ -1039,6 +1116,9 @@ mod tests {
         std::fs::write(&path, "one\n\ntwo\nthree\n").unwrap();
         assert_eq!(tail_text_file(&path, 2).unwrap(), "two\nthree");
         assert_eq!(tail_text_file(&dir.join("missing.log"), 10).unwrap(), "");
+        let created = dir.join("created.log");
+        ensure_log_file(&created).unwrap();
+        assert!(created.is_file());
     }
 
     #[test]

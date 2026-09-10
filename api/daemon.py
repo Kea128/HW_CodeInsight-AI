@@ -30,7 +30,11 @@ _LOG = _open_log()
 
 
 def _log(message: str) -> None:
-    print(f"{datetime.now().isoformat()} {message}", file=_LOG, flush=True)
+    print(
+        f"{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S')} {message}",
+        file=_LOG,
+        flush=True,
+    )
 
 
 def _configure_git() -> None:

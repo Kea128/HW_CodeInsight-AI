@@ -231,7 +231,7 @@ jobs:
         with:
           tagName: desktop-v__VERSION__
           releaseName: "CodeInsight-AI Desktop v__VERSION__"
-          releaseBody: "Desktop 0.2.20: show the Windows log folder in Settings, write Ubuntu sync/analyze events to operation.log, and fall back when custom APIs cannot build embeddings."
+          releaseBody: "Desktop 0.2.21: open operation.log and daemon.log directly from Settings, and write local timestamps on every log line."
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true

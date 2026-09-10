@@ -1559,6 +1559,11 @@ document.querySelector("#connect-ubuntu-button").addEventListener("click", () =>
   openDrawer("project-drawer");
   selectSource(true);
 });
+function formatLogTimestamp(value) {
+  const text = String(value || "").trim();
+  return text.replace(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/, "$1 $2");
+}
+
 function formatOperationLogLines(text) {
   if (!text || !String(text).trim()) return "";
   return String(text).split("\n").map((line) => {
@@ -1570,12 +1575,12 @@ function formatOperationLogLines(text) {
         const extra = record.data && Object.keys(record.data).length
           ? ` ${JSON.stringify(record.data)}`
           : "";
-        return `${record.ts || ""} [${record.level || "info"}] ${record.event || ""}: ${record.message || ""}${extra}`.trim();
+        return `${formatLogTimestamp(record.ts)} [${record.level || "info"}] ${record.event || ""}: ${record.message || ""}${extra}`.trim();
       }
     } catch {
       /* keep the original line */
     }
-    return line;
+    return formatLogTimestamp(line);
   }).filter(Boolean).join("\n");
 }
 
@@ -1630,7 +1635,7 @@ async function fetchOperationLogPayload() {
           const extra = record.data && Object.keys(record.data).length
             ? ` ${JSON.stringify(record.data)}`
             : "";
-          return `${record.ts || ""} [${record.level || "info"}] ${record.event || ""}: ${record.message || ""}${extra}`.trim();
+          return `${formatLogTimestamp(record.ts)} [${record.level || "info"}] ${record.event || ""}: ${record.message || ""}${extra}`.trim();
         }).filter(Boolean).join("\n");
       }
       return { text, path: payload?.path || "" };
@@ -1750,11 +1755,29 @@ document.querySelector("#copy-operation-log-button").addEventListener("click", a
     window.alert(errorMessage(error));
   }
 });
+async function openLogTarget(target) {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!invoke) throw new Error("请在桌面应用中打开日志");
+  await invoke("open_log_target", { target });
+}
+
 document.querySelector("#open-operation-log-button").addEventListener("click", async () => {
   try {
-    const invoke = window.__TAURI__?.core?.invoke;
-    if (!invoke) throw new Error("日志目录仅可在桌面应用中打开");
-    await invoke("open_daemon_log_directory");
+    await openLogTarget("directory");
+  } catch (error) {
+    window.alert(errorMessage(error));
+  }
+});
+document.querySelector("#open-operation-log-file-button").addEventListener("click", async () => {
+  try {
+    await openLogTarget("operation");
+  } catch (error) {
+    window.alert(errorMessage(error));
+  }
+});
+document.querySelector("#open-daemon-log-file-button").addEventListener("click", async () => {
+  try {
+    await openLogTarget("daemon");
   } catch (error) {
     window.alert(errorMessage(error));
   }
@@ -1949,8 +1972,7 @@ document.querySelector("#retry-engine-button").addEventListener("click", () => {
 document.querySelector("#open-engine-logs-button").addEventListener("click", async () => {
   try {
     const invoke = window.__TAURI__?.core?.invoke;
-    if (!invoke) throw new Error("日志目录仅可在桌面应用中打开");
-    await invoke("open_daemon_log_directory");
+    await openLogTarget("directory");
   } catch (error) {
     window.alert(errorMessage(error));
   }
