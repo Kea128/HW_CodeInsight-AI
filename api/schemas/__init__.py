@@ -24,6 +24,8 @@ from api.schemas.repo import (
 from api.schemas.remote import (
     RemoteProjectRequest,
     RemoteProjectStatus,
+    RemoteScopeCreateRequest,
+    RemoteScopeStatus,
     SSHFingerprintProbeRequest,
     SSHFingerprintProbeResponse,
 )
@@ -58,6 +60,8 @@ __all__ = [
     "RepoPrepareRequest",
     "RemoteProjectRequest",
     "RemoteProjectStatus",
+    "RemoteScopeCreateRequest",
+    "RemoteScopeStatus",
     "SSHFingerprintProbeRequest",
     "SSHFingerprintProbeResponse",
     "WikiCacheData",

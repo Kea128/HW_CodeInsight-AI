@@ -88,6 +88,51 @@ def _safe_owner(username: str, host: str) -> str:
     )
 
 
+def _display_parent(project: dict[str, Any]) -> str:
+    return f"{project['username']}@{project['host']}:{project['remote_path']}"
+
+
+def _scope_label(project: dict[str, Any], included_dirs: list[str] | None) -> str:
+    parent = _display_parent(project)
+    dirs = [item for item in (included_dirs or []) if item]
+    if not dirs:
+        return parent
+    if len(dirs) == 1:
+        return f"{parent} / {dirs[0]}"
+    return f"{parent} / {', '.join(dirs)}"
+
+
+def _normalize_scope_path(value: str) -> str:
+    raw = (value or "").replace("\\", "/").strip()
+    if not raw or raw in {".", "/"}:
+        raise RemoteProjectError("子分析目录不能为空")
+    if raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":"):
+        raise RemoteProjectError("请填写相对目录，不要使用绝对路径")
+    parts = [part for part in raw.split("/") if part and part != "."]
+    if not parts or any(part == ".." for part in parts):
+        raise RemoteProjectError("子分析目录不能包含上级路径")
+    return "/".join(parts)
+
+
+def _require_scope_dir(local_path: str, relative: str) -> None:
+    root = Path(local_path).expanduser().resolve()
+    target = (root / relative.replace("/", os.sep)).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as error:
+        raise RemoteProjectError("子分析目录必须位于同步副本内") from error
+    if not target.is_dir():
+        raise RemoteProjectError(f"同步副本中找不到目录 {relative}，请先同步")
+
+
+def _same_local_path(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    return os.path.normcase(os.path.normpath(left)) == os.path.normcase(
+        os.path.normpath(right)
+    )
+
+
 def _background_concurrency() -> int:
     try:
         return max(
@@ -392,67 +437,175 @@ class RemoteSyncManager:
         self._remove_listeners: list[Any] = []
         self._concurrency = asyncio.Semaphore(_background_concurrency())
 
-    def _analysis_request(self, project: dict[str, Any]) -> WikiTaskRequest:
+    def _workspace_root(self, project: dict[str, Any]) -> str:
+        path = Path(project["local_path"]).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            from api.services.local_roots import register_selected_root
+
+            return register_selected_root(str(path))
+        except Exception:
+            return str(path.resolve())
+
+    def _upsert_scope_space(
+        self, project: dict[str, Any], included_dirs: list[str]
+    ) -> Any:
+        if not hasattr(self.store, "upsert_knowledge_space"):
+            raise RemoteProjectError("当前存储不支持知识空间")
+        dirs = [item for item in included_dirs if item]
+        return self.store.upsert_knowledge_space(
+            workspace_root=self._workspace_root(project),
+            included_dirs=dirs,
+            excluded_dirs=[],
+            language=project.get("language") or "zh",
+            provider=project.get("provider"),
+            model=project.get("model"),
+            parent_workspace=_display_parent(project),
+            label=_scope_label(project, dirs),
+        )
+
+    def _spaces_for_project(self, project: dict[str, Any]) -> list[Any]:
+        if not hasattr(self.store, "list_knowledge_spaces"):
+            return []
+        return [
+            space
+            for space in self.store.list_knowledge_spaces()
+            if _same_local_path(getattr(space, "workspace_root", None), project["local_path"])
+        ]
+
+    def _space_belongs(self, project: dict[str, Any], space: Any) -> bool:
+        return _same_local_path(
+            getattr(space, "workspace_root", None), project["local_path"]
+        )
+
+    def _is_root_space(self, space: Any) -> bool:
+        return not list(getattr(space, "included_dirs", None) or [])
+
+    def _find_root_space(self, project: dict[str, Any]) -> Any | None:
+        return next(
+            (space for space in self._spaces_for_project(project) if self._is_root_space(space)),
+            None,
+        )
+
+    def _analysis_request(self, project: dict[str, Any], space: Any) -> WikiTaskRequest:
+        provider = project.get("provider")
+        if provider not in {"openai", "google", "ollama", "openai_compatible"}:
+            raise RemoteProjectError("请先在设置中配置可用的 AI")
         return WikiTaskRequest(
             repo_url=project["local_path"],
             type="local",
-            provider=project["provider"],
+            provider=provider,
             model=project.get("model"),
             language=project["language"],
             owner=_safe_owner(project["username"], project["host"]),
             repo=_safe_repo_name(project["remote_path"]),
+            included_dirs=list(getattr(space, "included_dirs", None) or []),
+            space_id=space.space_id,
             comprehensive=True,
             force=True,
         )
 
+    def _continuous_projects_for_mirror(
+        self, project: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in self.continuous.list_projects()
+            if _same_local_path(
+                (item.get("request") or {}).get("repo_url"), project["local_path"]
+            )
+        ]
+
+    def _continuous_for_space(self, space: Any) -> dict[str, Any] | None:
+        space_id = getattr(space, "space_id", None)
+        repo_key = f"space_{space_id}" if space_id else None
+        for item in self.continuous.list_projects():
+            request = item.get("request") or {}
+            if space_id and request.get("space_id") == space_id:
+                return item
+            if repo_key and item.get("id") == repo_key:
+                return item
+        return None
+
     def _continuous_project(self, project: dict[str, Any]) -> dict[str, Any] | None:
-        return next(
-            (
-                item
-                for item in self.continuous.list_projects()
-                if item["request"]["repo_url"] == project["local_path"]
-            ),
-            None,
+        root_space = self._find_root_space(project)
+        if root_space:
+            matched = self._continuous_for_space(root_space)
+            if matched:
+                return matched
+        for item in self._continuous_projects_for_mirror(project):
+            request = item.get("request") or {}
+            if request.get("included_dirs"):
+                continue
+            if request.get("space_id") and root_space is None:
+                continue
+            if request.get("space_id") and root_space and request.get("space_id") != root_space.space_id:
+                continue
+            return item
+        return None
+
+    def _task_progress(self, task_id: str | None) -> tuple[str | None, int, int | None]:
+        registry = getattr(self.continuous, "registry", None)
+        task = registry.get(task_id) if registry and task_id else None
+        if task is None:
+            return None, 0, None
+        status = getattr(task, "status", None)
+        return (
+            getattr(status, "value", status),
+            int(getattr(task, "pages_done", 0) or 0),
+            getattr(task, "pages_total", None),
         )
 
-    def _apply_current_desktop_model(self, project: dict[str, Any]) -> None:
+    def _scope_status(self, project: dict[str, Any], space: Any) -> dict[str, Any]:
+        continuous = self._continuous_for_space(space)
+        task_id = (
+            getattr(space, "last_task_id", None)
+            or (continuous.get("last_task_id") if continuous else None)
+        )
+        analysis_status, pages_done, pages_total = self._task_progress(task_id)
+        included = list(getattr(space, "included_dirs", None) or [])
+        return {
+            "space_id": space.space_id,
+            "label": getattr(space, "label", None) or _scope_label(project, included),
+            "included_dirs": included,
+            "last_task_id": task_id,
+            "analysis_status": analysis_status,
+            "analysis_pages_done": pages_done,
+            "analysis_pages_total": pages_total,
+        }
+
+    def _apply_current_desktop_model(self, project: dict[str, Any]) -> bool:
         try:
             from api.desktop_settings import load_desktop_settings
 
             data = load_desktop_settings()
         except Exception:
-            return
+            return False
         provider = (data.get("provider") or "").lower()
         if provider not in {"openai", "google", "ollama", "openai_compatible"}:
-            return
+            return False
         if provider != "ollama" and not data.get(f"{provider}_api_key"):
-            return
+            return False
         if provider == "openai_compatible" and not (
             data.get("base_url") and data.get("selected_model")
         ):
-            return
+            return False
         project["provider"] = provider
         if provider == "ollama":
             if data.get("ollama_model"):
                 project["model"] = data["ollama_model"]
         elif data.get("selected_model"):
             project["model"] = data["selected_model"]
+        return True
 
     def _status(self, project: dict[str, Any]) -> dict[str, Any]:
         continuous_project = self._continuous_project(project)
         task_id = (
             continuous_project.get("last_task_id") if continuous_project else None
         )
-        registry = getattr(self.continuous, "registry", None)
-        task = registry.get(task_id) if registry and task_id else None
-        analysis_status = None
-        analysis_pages_done = 0
-        analysis_pages_total = None
-        if task is not None:
-            status = getattr(task, "status", None)
-            analysis_status = getattr(status, "value", status)
-            analysis_pages_done = int(getattr(task, "pages_done", 0) or 0)
-            analysis_pages_total = getattr(task, "pages_total", None)
+        analysis_status, analysis_pages_done, analysis_pages_total = self._task_progress(
+            task_id
+        )
         return {
             "id": project["id"],
             "host": project["host"],
@@ -478,6 +631,10 @@ class RemoteSyncManager:
             "analysis_status": analysis_status,
             "analysis_pages_done": analysis_pages_done,
             "analysis_pages_total": analysis_pages_total,
+            "scopes": [
+                self._scope_status(project, space)
+                for space in self._spaces_for_project(project)
+            ],
         }
 
     def _reconcile_analysis_stages(self) -> None:
@@ -571,8 +728,8 @@ class RemoteSyncManager:
                 "remote_path": remote_path,
                 "local_path": str(remote_data_root() / "remote-repos" / project_id),
                 "credential_id": project_id,
-                "provider": request.provider,
-                "model": request.model,
+                "provider": None,
+                "model": None,
                 "language": request.language,
                 "host_fingerprint": request.host_fingerprint,
                 "enabled": True,
@@ -626,7 +783,7 @@ class RemoteSyncManager:
                     ) from original
                 raise
             self._active[project_id] = asyncio.create_task(
-                self._initial_sync(project_id, analyze_when_ready=request.analyze_now)
+                self._initial_sync(project_id, analyze_when_ready=False)
             )
             return self._status(project)
 
@@ -637,15 +794,20 @@ class RemoteSyncManager:
             await self._sync(project_id, analyze_when_ready=analyze_when_ready)
 
     async def _analyze_locked(self, project: dict[str, Any]) -> None:
-        self._apply_current_desktop_model(project)
+        if not self._apply_current_desktop_model(project):
+            raise RemoteProjectError("请先在设置中配置可用的 AI")
+        space = self._upsert_scope_space(project, [])
         project["progress_message"] = "正在启动分析任务…"
         self._save_stage(project, "analyzing")
         try:
-            await self.continuous.register(
-                self._analysis_request(project),
+            result = await self.continuous.register(
+                self._analysis_request(project, space),
                 poll_seconds=max(10, project["poll_seconds"]),
                 analyze_now=True,
             )
+            task_id = result.get("last_task_id") or result.get("id")
+            if task_id and hasattr(self.store, "set_knowledge_space_task"):
+                self.store.set_knowledge_space_task(space.space_id, task_id)
         except Exception as error:
             self._save_stage(project, "failed", str(error))
             raise
@@ -658,6 +820,88 @@ class RemoteSyncManager:
                 raise KeyError(project_id)
             await self._analyze_locked(project)
             return self._status(project)
+
+    def list_scopes(self, project_id: str) -> list[dict[str, Any]]:
+        project = self.store.get_remote_project(project_id)
+        if not project:
+            raise KeyError(project_id)
+        return [
+            self._scope_status(project, space)
+            for space in self._spaces_for_project(project)
+        ]
+
+    def detect_scopes(self, project_id: str) -> list[Any]:
+        project = self.store.get_remote_project(project_id)
+        if not project:
+            raise KeyError(project_id)
+        local_path = project["local_path"]
+        if not Path(local_path).is_dir():
+            raise RemoteProjectError("请先完成同步后再探测子目录")
+        from api.services.knowledge.spaces import detect_subrepos
+
+        return detect_subrepos(local_path)
+
+    def create_scopes(
+        self, project_id: str, included_dirs: list[str]
+    ) -> list[dict[str, Any]]:
+        project = self.store.get_remote_project(project_id)
+        if not project:
+            raise KeyError(project_id)
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in included_dirs:
+            path = _normalize_scope_path(raw)
+            if path in seen:
+                continue
+            seen.add(path)
+            _require_scope_dir(project["local_path"], path)
+            normalized.append(path)
+        if not normalized:
+            raise RemoteProjectError("请至少选择一个子目录")
+        return [
+            self._scope_status(project, self._upsert_scope_space(project, [path]))
+            for path in normalized
+        ]
+
+    async def analyze_scope(self, project_id: str, space_id: str) -> dict[str, Any]:
+        lock = self._locks.setdefault(project_id, asyncio.Lock())
+        async with lock:
+            project = self.store.get_remote_project(project_id)
+            if not project:
+                raise KeyError(project_id)
+            if not hasattr(self.store, "get_knowledge_space"):
+                raise KeyError(space_id)
+            space = self.store.get_knowledge_space(space_id)
+            if not space or not self._space_belongs(project, space):
+                raise KeyError(space_id)
+            if not self._apply_current_desktop_model(project):
+                raise RemoteProjectError("请先在设置中配置可用的 AI")
+            self.store.save_remote_project(project)
+            result = await self.continuous.register(
+                self._analysis_request(project, space),
+                poll_seconds=max(10, project["poll_seconds"]),
+                analyze_now=True,
+            )
+            task_id = result.get("last_task_id") or result.get("id")
+            if task_id and hasattr(self.store, "set_knowledge_space_task"):
+                self.store.set_knowledge_space_task(space.space_id, task_id)
+            return self._status(project)
+
+    def delete_scope(self, project_id: str, space_id: str) -> bool:
+        project = self.store.get_remote_project(project_id)
+        if not project:
+            raise KeyError(project_id)
+        if not hasattr(self.store, "get_knowledge_space"):
+            return False
+        space = self.store.get_knowledge_space(space_id)
+        if not space or not self._space_belongs(project, space):
+            return False
+        continuous = self._continuous_for_space(space)
+        if continuous:
+            self.continuous.remove(continuous["id"])
+        if not hasattr(self.store, "delete_knowledge_space"):
+            return False
+        return self.store.delete_knowledge_space(space_id)
 
     async def sync(self, project_id: str) -> dict[str, Any]:
         lock = self._locks.setdefault(project_id, asyncio.Lock())
@@ -753,12 +997,15 @@ class RemoteSyncManager:
             project = self.store.get_remote_project(project_id)
             if not project:
                 return False
-            continuous_project = self._continuous_project(project)
+            spaces = self._spaces_for_project(project)
+            for item in self._continuous_projects_for_mirror(project):
+                self.continuous.remove(item["id"])
+            for space in spaces:
+                if hasattr(self.store, "delete_knowledge_space"):
+                    self.store.delete_knowledge_space(space.space_id)
             deleted = self.store.delete_remote_project(project_id)
             if not deleted:
                 return False
-            if continuous_project:
-                self.continuous.remove(continuous_project["id"])
             for callback in self._remove_listeners:
                 callback(project_id)
             self.credentials.delete(project["credential_id"])

@@ -20,6 +20,20 @@ from api.services.ssh_client import fingerprint
 from api.services.wiki.store import WikiTaskStore
 
 
+class _MemoryCredentials:
+    def __init__(self):
+        self.values = {}
+
+    def set(self, credential_id, password):
+        self.values[credential_id] = password
+
+    def get(self, credential_id):
+        return self.values.get(credential_id)
+
+    def delete(self, credential_id):
+        self.values.pop(credential_id, None)
+
+
 class _PasswordServer(paramiko.ServerInterface):
     def __init__(self, root: Path):
         self.root = root
@@ -127,6 +141,7 @@ def e2e_client(e2e_env, monkeypatch):
     remote_router.manager = RemoteSyncManager(
         continuous_router.manager,
         store=store,
+        credentials=_MemoryCredentials(),
     )
     from api.main import app
 
@@ -319,13 +334,15 @@ def test_e2e_ubuntu_remote_sync(e2e_client, e2e_env, monkeypatch):
                 "password": "testpass",
                 "remote_path": "/srv/code/demo",
                 "poll_seconds": 60,
-                "provider": "ollama",
+                "provider": "openai_compatible",
+                "model": "qwen-plus",
                 "language": "zh",
                 "host_fingerprint": server.fingerprint,
-                "analyze_now": False,
+                "analyze_now": True,
             },
         )
         assert created.status_code == 200, created.text
+        assert created.json()["stage"] != "analyzing"
         project_id = created.json()["id"]
 
         status = None
@@ -338,6 +355,7 @@ def test_e2e_ubuntu_remote_sync(e2e_client, e2e_env, monkeypatch):
             time.sleep(0.1)
         assert status is not None
         assert status["stage"] != "failed", status.get("last_error")
+        assert status["stage"] != "analyzing"
         assert status["files_seen"] >= 2
 
         mirrored = Path(e2e_env["tmp"] / "appdata" / "CodeInsight-AI" / "remote-repos" / project_id)

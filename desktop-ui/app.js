@@ -13,6 +13,7 @@ let savedModelProvider = localStorage.getItem("codeinsight-model-provider") || "
 let modelProvider = savedModelProvider;
 let savedModelId = localStorage.getItem("codeinsight-model-id") || "";
 let latestRemoteProjects = [];
+let scopeProjectId = "";
 let remoteWatchTimer = null;
 let latestKnowledgeSpaces = [];
 let activeSpaceId = localStorage.getItem("codeinsight-active-space") || "";
@@ -69,6 +70,9 @@ function formatApiDetail(detail) {
     }
   } catch {
     /* keep the original engine message */
+  }
+  if (/openai['\"]?,\s*['\"]google['\"]?.*ollama/i.test(detail)) {
+    return "连接 Ubuntu 不需要选择 AI 模型。请只填写服务器信息；自定义 API 在「设置」里配置，同步完成后点「开始分析」才会用到。";
   }
   return detail;
 }
@@ -152,7 +156,7 @@ function focusableElements(container) {
 function updateSetupBanner() {
   document.querySelector("#setup-banner").hidden = modelConfigured || engineState !== "ready";
   const notice = document.querySelector("#remote-ai-notice");
-  const manualHint = "同步完成后请点卡片上的「开始分析」。密码只保存在 Windows 凭据管理器。";
+  const manualHint = "连接 Ubuntu 与 AI 模型无关。自定义接口请在设置中保存，同步完成后点「开始分析」。";
   notice.textContent = modelHint ? `${modelHint} ${manualHint}` : manualHint;
   notice.hidden = engineState !== "ready";
   notice.className = modelProbeStatus === "failed" || !modelConfigured
@@ -862,17 +866,17 @@ function renderRemoteProject(project) {
       syncButton.disabled = false;
     }
   });
-  const analyzeButton = remoteActionButton("开始分析", async () => {
+  const analyzeButton = remoteActionButton("分析整个根目录", async () => {
     if (!modelConfigured || modelProbeStatus === "failed") {
       openDrawer("settings-drawer");
       return;
     }
     await api(`/remote/projects/${encodeURIComponent(project.id)}/analyze`, { method: "POST" });
-    await loadRemoteProjects();
+    await refreshWorkspace();
   });
   if (project.stage === "analyzing") {
     analyzeButton.disabled = true;
-    analyzeButton.title = "正在分析…";
+    analyzeButton.title = "正在分析整个根目录…";
   } else if (busy) {
     analyzeButton.disabled = true;
     analyzeButton.title = "同步完成后可开始";
@@ -884,8 +888,17 @@ function renderRemoteProject(project) {
   } else if (modelProbeStatus === "failed") {
     analyzeButton.title = "AI 最近测试失败";
   } else {
-    analyzeButton.title = "开始生成知识库";
+    analyzeButton.title = "分析整个根目录";
   }
+  const addScopeButton = remoteActionButton("添加子分析", () => {
+    if (!hasCopy) {
+      window.alert("请先完成同步");
+      return;
+    }
+    openRemoteScopeDrawer(project);
+  });
+  addScopeButton.disabled = !hasCopy || ["connecting", "syncing"].includes(project.stage);
+  addScopeButton.title = addScopeButton.disabled ? "同步完成后可添加子分析" : "在已同步目录上创建子分析";
   const retryButton = project.stage === "failed"
     ? remoteActionButton("重试", async () => {
       await api(`/remote/projects/${encodeURIComponent(project.id)}/retry`, { method: "POST" });
@@ -918,12 +931,84 @@ function renderRemoteProject(project) {
     },
     "danger",
   );
-  actions.append(terminalButton, syncButton, analyzeButton);
+  actions.append(terminalButton, syncButton, analyzeButton, addScopeButton);
   if (retryButton) actions.append(retryButton);
   if (cancelButton) actions.append(cancelButton);
   actions.append(deleteButton);
   card.append(detail, actions);
+  const childScopes = (project.scopes || []).filter((scope) => (scope.included_dirs || []).length);
+  if (childScopes.length) {
+    const scopes = document.createElement("div");
+    scopes.className = "remote-scopes";
+    childScopes.forEach((scope) => scopes.append(renderRemoteScope(project, scope)));
+    card.append(scopes);
+  }
   return card;
+}
+
+function renderRemoteScope(project, scope) {
+  const row = document.createElement("div");
+  row.className = "remote-scope";
+  const info = document.createElement("div");
+  const title = document.createElement("p");
+  title.textContent = scope.included_dirs.join(", ");
+  const meta = document.createElement("p");
+  meta.className = "meta";
+  const analyzing = scope.analysis_status && !["completed", "failed", "cancelled"].includes(scope.analysis_status);
+  meta.textContent = analyzing
+    ? `正在分析${scope.analysis_pages_total ? ` ${scope.analysis_pages_done}/${scope.analysis_pages_total}` : "…"}`
+    : (scope.analysis_status === "completed" ? "已分析" : "未分析");
+  info.append(title, meta);
+  const analyze = remoteActionButton("开始分析", async () => {
+    if (!modelConfigured || modelProbeStatus === "failed") {
+      openDrawer("settings-drawer");
+      return;
+    }
+    await api(
+      `/remote/projects/${encodeURIComponent(project.id)}/scopes/${encodeURIComponent(scope.space_id)}/analyze`,
+      { method: "POST" },
+    );
+    await refreshWorkspace();
+  });
+  if (analyzing) {
+    analyze.disabled = true;
+    analyze.title = "正在分析…";
+  } else if (!modelConfigured) {
+    analyze.title = "请先配置 AI";
+  }
+  const remove = remoteActionButton("删除", async () => {
+    if (!window.confirm(`删除子分析 ${scope.included_dirs.join(", ")}？同步副本和服务器代码不会被修改。`)) return;
+    await api(
+      `/remote/projects/${encodeURIComponent(project.id)}/scopes/${encodeURIComponent(scope.space_id)}`,
+      { method: "DELETE" },
+    );
+    await refreshWorkspace();
+  }, "danger");
+  const actions = document.createElement("div");
+  actions.className = "task-actions";
+  actions.append(analyze, remove);
+  row.append(info, actions);
+  return row;
+}
+
+function openRemoteScopeDrawer(project) {
+  scopeProjectId = project.id;
+  document.querySelector("#remote-scope-target").textContent =
+    `${project.username}@${project.host}:${project.remote_path}`;
+  document.querySelector("#remote-scope-custom").value = "";
+  document.querySelector("#remote-scope-list").innerHTML =
+    '<p class="empty">点「扫描子目录」，或在下方填写相对路径。</p>';
+  const message = document.querySelector("#remote-scope-message");
+  message.className = "message";
+  message.textContent = "";
+  openDrawer("remote-scope-drawer");
+}
+
+function parseRemoteScopeCustom(value) {
+  return value
+    .split(/[\n,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 async function loadRemoteProjects() {
@@ -1238,8 +1323,6 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
     password: passwordInput.value,
     remote_path: document.querySelector("#remote-path").value.trim(),
     poll_seconds: Number(document.querySelector("#remote-poll-seconds").value),
-    provider: savedModelProvider,
-    model: savedModelId || null,
     language: "zh",
   };
   try {
@@ -1260,7 +1343,6 @@ document.querySelector("#remote-form").addEventListener("submit", async (event) 
     }
     rememberRemoteFingerprint(`${body.host}:${body.port}`, probe.fingerprint);
     body.host_fingerprint = probe.fingerprint;
-    body.analyze_now = false;
     setRemoteFlow("connect");
     message.textContent = "指纹已确认，正在验证用户名和密码…";
     await api("/remote/projects", {
@@ -1284,6 +1366,65 @@ document.querySelector("#remote-form").addEventListener("input", () => {
   remoteFormEdited = true;
   writeRemoteDraft();
   setRemoteFlow("fingerprint");
+});
+
+document.querySelector("#remote-scope-detect-button").addEventListener("click", async () => {
+  const list = document.querySelector("#remote-scope-list");
+  const message = document.querySelector("#remote-scope-message");
+  if (!scopeProjectId) {
+    list.innerHTML = '<p class="empty">请先选择一个远程项目。</p>';
+    return;
+  }
+  list.innerHTML = '<p class="empty">正在扫描…</p>';
+  message.className = "message";
+  message.textContent = "";
+  try {
+    const detected = await api(
+      `/remote/projects/${encodeURIComponent(scopeProjectId)}/scopes/detect`,
+      { method: "POST" },
+    );
+    list.replaceChildren();
+    if (!detected.candidates.length) {
+      list.innerHTML = '<p class="empty">未发现子仓，请手动填写相对路径。</p>';
+      return;
+    }
+    detected.candidates.forEach((candidate) => {
+      const label = document.createElement("label");
+      label.className = "checkbox";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = candidate.path;
+      label.append(input, document.createTextNode(`${candidate.label}（${candidate.kind}）`));
+      list.append(label);
+    });
+  } catch (error) {
+    list.innerHTML = `<p class="message error">${errorMessage(error)}</p>`;
+  }
+});
+
+document.querySelector("#remote-scope-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = document.querySelector("#remote-scope-message");
+  const checked = [...document.querySelectorAll("#remote-scope-list input[type=checkbox]:checked")]
+    .map((input) => input.value);
+  const custom = parseRemoteScopeCustom(document.querySelector("#remote-scope-custom").value);
+  const included = [...new Set([...checked, ...custom])];
+  try {
+    if (!scopeProjectId) throw new Error("请先选择一个远程项目");
+    if (!included.length) throw new Error("请勾选或填写至少一个子目录");
+    message.className = "message";
+    message.textContent = "正在创建子分析…";
+    await api(`/remote/projects/${encodeURIComponent(scopeProjectId)}/scopes`, {
+      method: "POST",
+      body: JSON.stringify({ included_dirs: included }),
+    });
+    message.textContent = "子分析已创建。完成后请在卡片上点「开始分析」。";
+    await refreshWorkspace();
+    closeDrawers();
+  } catch (error) {
+    message.className = "message error";
+    message.textContent = errorMessage(error);
+  }
 });
 
 document.querySelector("#project-form").addEventListener("submit", async (event) => {

@@ -10,11 +10,8 @@ class RemoteProjectRequest(BaseModel):
     password: SecretStr = Field(repr=False)
     remote_path: str = Field(min_length=1, max_length=4096)
     poll_seconds: int = Field(60, ge=10, le=3600)
-    provider: Literal["openai", "google", "ollama", "openai_compatible"] = "ollama"
-    model: str | None = None
     language: str = "zh"
     host_fingerprint: str | None = Field(default=None, min_length=8, max_length=256)
-    analyze_now: bool = False
 
     @field_validator("host", "username")
     @classmethod
@@ -65,6 +62,21 @@ class RemoteProjectStatus(BaseModel):
     analysis_status: str | None = None
     analysis_pages_done: int = 0
     analysis_pages_total: int | None = None
+    scopes: list["RemoteScopeStatus"] = Field(default_factory=list)
+
+
+class RemoteScopeStatus(BaseModel):
+    space_id: str
+    label: str
+    included_dirs: list[str] = Field(default_factory=list)
+    last_task_id: str | None = None
+    analysis_status: str | None = None
+    analysis_pages_done: int = 0
+    analysis_pages_total: int | None = None
+
+
+class RemoteScopeCreateRequest(BaseModel):
+    included_dirs: list[str] = Field(default_factory=list)
 
 
 class SSHFingerprintProbeRequest(BaseModel):

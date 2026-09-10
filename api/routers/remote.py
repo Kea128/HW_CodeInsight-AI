@@ -6,9 +6,12 @@ from api.routers.continuous import manager as continuous_manager
 from api.schemas import (
     RemoteProjectRequest,
     RemoteProjectStatus,
+    RemoteScopeCreateRequest,
+    RemoteScopeStatus,
     SSHFingerprintProbeRequest,
     SSHFingerprintProbeResponse,
 )
+from api.schemas.knowledge import KnowledgeDetectResponse
 from api.services.remote import RemoteProjectError, RemoteSyncManager
 from api.services.ssh_client import CredentialStoreUnavailable, probe_host_fingerprint
 
@@ -72,6 +75,68 @@ async def analyze_remote_project(project_id: str):
         return await manager.analyze(project_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="远程项目不存在") from error
+    except RemoteProjectError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/projects/{project_id}/scopes", response_model=list[RemoteScopeStatus])
+async def list_remote_scopes(project_id: str):
+    try:
+        return manager.list_scopes(project_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="远程项目不存在") from error
+
+
+@router.post(
+    "/projects/{project_id}/scopes/detect", response_model=KnowledgeDetectResponse
+)
+async def detect_remote_scopes(project_id: str):
+    try:
+        project = manager.store.get_remote_project(project_id)
+        if not project:
+            raise KeyError(project_id)
+        return {
+            "workspace_root": project["remote_path"],
+            "candidates": manager.detect_scopes(project_id),
+        }
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="远程项目不存在") from error
+    except RemoteProjectError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/projects/{project_id}/scopes", response_model=list[RemoteScopeStatus])
+async def create_remote_scopes(project_id: str, request: RemoteScopeCreateRequest):
+    try:
+        return manager.create_scopes(project_id, request.included_dirs)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="远程项目不存在") from error
+    except RemoteProjectError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post(
+    "/projects/{project_id}/scopes/{space_id}/analyze",
+    response_model=RemoteProjectStatus,
+)
+async def analyze_remote_scope(project_id: str, space_id: str):
+    try:
+        return await manager.analyze_scope(project_id, space_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="远程子分析不存在") from error
+    except RemoteProjectError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.delete("/projects/{project_id}/scopes/{space_id}", status_code=204)
+async def delete_remote_scope(project_id: str, space_id: str):
+    try:
+        deleted = manager.delete_scope(project_id, space_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="远程项目不存在") from error
+    if not deleted:
+        raise HTTPException(status_code=404, detail="远程子分析不存在")
+    return Response(status_code=204)
 
 
 @router.post("/projects/{project_id}/cancel", status_code=202)

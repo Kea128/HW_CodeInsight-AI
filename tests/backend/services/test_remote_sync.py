@@ -9,6 +9,8 @@ import paramiko
 import pytest
 
 from api.schemas import RemoteProjectRequest, TaskStatus
+from api.schemas.knowledge import KnowledgeSpace
+from api.services.knowledge.spaces import compute_space_id, knowledge_label
 from api.services import ssh_client
 from api.services.ssh_client import fingerprints_match
 from api.services.remote import (
@@ -70,6 +72,7 @@ class FakeStore:
     def __init__(self):
         self.remote_projects = {}
         self.continuous_projects = {}
+        self.knowledge_spaces = {}
 
     def get_remote_project(self, project_id):
         return self.remote_projects.get(project_id)
@@ -85,6 +88,56 @@ class FakeStore:
 
     def save_continuous_project(self, project):
         self.continuous_projects[project["id"]] = project.copy()
+
+    def upsert_knowledge_space(
+        self,
+        *,
+        workspace_root,
+        included_dirs,
+        excluded_dirs,
+        language,
+        provider,
+        model,
+        last_task_id=None,
+        parent_workspace=None,
+        label=None,
+    ):
+        space_id = compute_space_id(workspace_root, included_dirs, language)
+        existing = self.knowledge_spaces.get(space_id)
+        space = KnowledgeSpace(
+            space_id=space_id,
+            workspace_root=workspace_root,
+            included_dirs=list(included_dirs or []),
+            excluded_dirs=list(excluded_dirs or []),
+            label=label or knowledge_label(workspace_root, included_dirs),
+            parent_workspace=parent_workspace or workspace_root,
+            language=language,
+            provider=provider,
+            model=model,
+            last_task_id=last_task_id
+            or (existing.last_task_id if existing else None),
+            created_at=existing.created_at if existing else 1,
+            updated_at=2,
+        )
+        self.knowledge_spaces[space_id] = space
+        return space
+
+    def list_knowledge_spaces(self):
+        return list(self.knowledge_spaces.values())
+
+    def get_knowledge_space(self, space_id):
+        return self.knowledge_spaces.get(space_id)
+
+    def set_knowledge_space_task(self, space_id, task_id):
+        space = self.knowledge_spaces.get(space_id)
+        if space is None:
+            return
+        self.knowledge_spaces[space_id] = space.model_copy(
+            update={"last_task_id": task_id}
+        )
+
+    def delete_knowledge_space(self, space_id):
+        return self.knowledge_spaces.pop(space_id, None) is not None
 
 
 class FakeCredentials:
@@ -335,7 +388,6 @@ async def test_create_stores_password_only_in_credentials(monkeypatch, tmp_path)
             username="ubuntu",
             password="server-secret",
             remote_path="/srv/code/demo",
-            provider="ollama",
             host_fingerprint="SHA256:test",
         )
     )
@@ -374,12 +426,12 @@ async def test_first_sync_without_ai_stays_ready_for_analysis(monkeypatch, tmp_p
             password="server-secret",
             remote_path="/srv/code/demo",
             host_fingerprint="SHA256:test",
-            analyze_now=False,
         )
     )
     await manager._active[status["id"]]
 
     assert store.remote_projects[status["id"]]["stage"] == "ready_for_analysis"
+    assert store.remote_projects[status["id"]]["provider"] is None
     assert continuous.requests == []
 
 
@@ -454,12 +506,18 @@ async def test_background_analysis_failure_keeps_project_retryable(monkeypatch, 
             username="ubuntu",
             password="server-secret",
             remote_path="/srv/code/demo",
-            provider="ollama",
             host_fingerprint="SHA256:test",
-            analyze_now=True,
         )
     )
     await manager._active[status["id"]]
+    assert store.remote_projects[status["id"]]["stage"] == "ready_for_analysis"
+
+    monkeypatch.setattr(
+        "api.desktop_settings.load_desktop_settings",
+        lambda: {"provider": "ollama", "ollama_model": "qwen3:4b"},
+    )
+    with pytest.raises(RuntimeError, match="analysis registration failed"):
+        await manager.analyze(status["id"])
 
     project = store.remote_projects[status["id"]]
     assert project["stage"] == "failed"
@@ -572,7 +630,6 @@ async def test_sync_persists_live_progress_before_completion(monkeypatch, tmp_pa
             password="server-secret",
             remote_path="/srv/code/demo",
             host_fingerprint="SHA256:test",
-            analyze_now=False,
         )
     )
     await manager._active[status["id"]]
@@ -586,9 +643,7 @@ async def test_sync_persists_live_progress_before_completion(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_create_accepts_openai_compatible_and_uses_model(
-    monkeypatch, tmp_path
-):
+async def test_create_does_not_require_ai_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     _pass_login(monkeypatch)
     monkeypatch.setattr(
@@ -598,9 +653,9 @@ async def test_create_accepts_openai_compatible_and_uses_model(
             "SHA256:test",
         ),
     )
-    continuous = FakeContinuous()
+    store = FakeStore()
     manager = RemoteSyncManager(
-        continuous, store=FakeStore(), credentials=FakeCredentials()
+        FakeContinuous(), store=store, credentials=FakeCredentials()
     )
 
     status = await manager.create(
@@ -609,14 +664,349 @@ async def test_create_accepts_openai_compatible_and_uses_model(
             username="ubuntu",
             password="server-secret",
             remote_path="/srv/code/demo",
-            provider="openai_compatible",
-            model="qwen-plus",
             host_fingerprint="SHA256:test",
-            analyze_now=True,
         )
     )
     await manager._active[status["id"]]
 
+    project = store.remote_projects[status["id"]]
+    assert project["stage"] == "ready_for_analysis"
+    assert project["provider"] is None
+    assert project["model"] is None
+
+
+def test_create_request_ignores_legacy_ai_fields():
+    request = RemoteProjectRequest.model_validate(
+        {
+            "host": "10.0.0.8",
+            "username": "ubuntu",
+            "password": "server-secret",
+            "remote_path": "/srv/code/demo",
+            "host_fingerprint": "SHA256:test",
+            "provider": "openai_compatible",
+            "model": "qwen-plus",
+            "analyze_now": True,
+        }
+    )
+
+    dumped = request.model_dump()
+    assert "provider" not in dumped
+    assert "model" not in dumped
+    assert "analyze_now" not in dumped
+    assert "provider" not in RemoteProjectRequest.model_fields
+    assert "model" not in RemoteProjectRequest.model_fields
+    assert "analyze_now" not in RemoteProjectRequest.model_fields
+
+
+@pytest.mark.asyncio
+async def test_create_ignores_analyze_now_from_legacy_client(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
+    monkeypatch.setattr(
+        "api.services.remote._sync_project",
+        lambda project, password, known_hosts, cancel_event=None, on_progress=None: (
+            MirrorResult(files_seen=1, changed=True),
+            "SHA256:test",
+        ),
+    )
+    store = FakeStore()
+    continuous = FakeContinuous()
+    manager = RemoteSyncManager(
+        continuous, store=store, credentials=FakeCredentials()
+    )
+    request = RemoteProjectRequest.model_validate(
+        {
+            "host": "10.0.0.8",
+            "username": "ubuntu",
+            "password": "server-secret",
+            "remote_path": "/srv/code/demo",
+            "host_fingerprint": "SHA256:test",
+            "provider": "openai_compatible",
+            "model": "qwen-plus",
+            "analyze_now": True,
+        }
+    )
+
+    status = await manager.create(request)
+    await manager._active[status["id"]]
+
+    project = store.remote_projects[status["id"]]
+    assert project["stage"] == "ready_for_analysis"
+    assert project["provider"] is None
+    assert continuous.requests == []
+
+
+@pytest.mark.asyncio
+async def test_analyze_uses_current_desktop_settings(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
+    monkeypatch.setattr(
+        "api.services.remote._sync_project",
+        lambda project, password, known_hosts, cancel_event=None, on_progress=None: (
+            MirrorResult(files_seen=1, changed=True),
+            "SHA256:test",
+        ),
+    )
+    monkeypatch.setattr(
+        "api.desktop_settings.load_desktop_settings",
+        lambda: {
+            "provider": "openai_compatible",
+            "openai_compatible_api_key": "__keyring__",
+            "base_url": "https://api.example.com/v1",
+            "selected_model": "qwen-plus",
+        },
+    )
+    store = FakeStore()
+    continuous = FakeContinuous()
+    manager = RemoteSyncManager(
+        continuous, store=store, credentials=FakeCredentials()
+    )
+
+    status = await manager.create(
+        RemoteProjectRequest(
+            host="10.0.0.8",
+            username="ubuntu",
+            password="server-secret",
+            remote_path="/srv/code/demo",
+            host_fingerprint="SHA256:test",
+        )
+    )
+    await manager._active[status["id"]]
+    assert continuous.requests == []
+
+    await manager.analyze(status["id"])
+
     request = continuous.requests[0][0]
     assert request.provider == "openai_compatible"
     assert request.model == "qwen-plus"
+    assert request.space_id
+    assert request.included_dirs == []
+    assert store.remote_projects[status["id"]]["provider"] == "openai_compatible"
+    assert store.remote_projects[status["id"]]["model"] == "qwen-plus"
+
+
+@pytest.mark.asyncio
+async def test_analyze_requires_desktop_ai_settings(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
+    monkeypatch.setattr(
+        "api.services.remote._sync_project",
+        lambda project, password, known_hosts, cancel_event=None, on_progress=None: (
+            MirrorResult(files_seen=1, changed=True),
+            "SHA256:test",
+        ),
+    )
+    monkeypatch.setattr("api.desktop_settings.load_desktop_settings", lambda: {})
+    store = FakeStore()
+    continuous = FakeContinuous()
+    manager = RemoteSyncManager(
+        continuous, store=store, credentials=FakeCredentials()
+    )
+
+    status = await manager.create(
+        RemoteProjectRequest(
+            host="10.0.0.8",
+            username="ubuntu",
+            password="server-secret",
+            remote_path="/srv/code/demo",
+            host_fingerprint="SHA256:test",
+        )
+    )
+    await manager._active[status["id"]]
+
+    with pytest.raises(RemoteProjectError, match="请先在设置中配置可用的 AI"):
+        await manager.analyze(status["id"])
+
+    assert continuous.requests == []
+    assert store.remote_projects[status["id"]]["stage"] == "ready_for_analysis"
+
+
+def _compatible_settings():
+    return {
+        "provider": "openai_compatible",
+        "openai_compatible_api_key": "__keyring__",
+        "base_url": "https://api.example.com/v1",
+        "selected_model": "qwen-plus",
+    }
+
+
+async def _synced_remote(monkeypatch, tmp_path, store=None, continuous=None):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    _pass_login(monkeypatch)
+    monkeypatch.setattr(
+        "api.services.remote._sync_project",
+        lambda project, password, known_hosts, cancel_event=None, on_progress=None: (
+            MirrorResult(files_seen=3, changed=True),
+            "SHA256:test",
+        ),
+    )
+    store = store or FakeStore()
+    continuous = continuous or FakeContinuous()
+    manager = RemoteSyncManager(
+        continuous, store=store, credentials=FakeCredentials()
+    )
+    status = await manager.create(
+        RemoteProjectRequest(
+            host="10.0.0.8",
+            username="ubuntu",
+            password="server-secret",
+            remote_path="/srv/code/demo",
+            host_fingerprint="SHA256:test",
+        )
+    )
+    await manager._active[status["id"]]
+    project = store.remote_projects[status["id"]]
+    mirror = Path(project["local_path"])
+    (mirror / "packages" / "api").mkdir(parents=True)
+    (mirror / "YinWang" / "br_feature_ADS_truck_0820").mkdir(parents=True)
+    (mirror / "README.md").write_text("demo", encoding="utf-8")
+    return manager, store, continuous, status, mirror
+
+
+def test_scope_create_request_ignores_legacy_ai_fields():
+    from api.schemas import RemoteScopeCreateRequest
+
+    request = RemoteScopeCreateRequest.model_validate(
+        {
+            "included_dirs": ["packages/api"],
+            "provider": "openai_compatible",
+            "model": "qwen-plus",
+            "analyze_now": True,
+        }
+    )
+    dumped = request.model_dump()
+    assert dumped["included_dirs"] == ["packages/api"]
+    assert "provider" not in dumped
+    assert "analyze_now" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_detect_scopes_finds_packages(monkeypatch, tmp_path):
+    manager, _store, _continuous, status, _mirror = await _synced_remote(
+        monkeypatch, tmp_path
+    )
+
+    candidates = manager.detect_scopes(status["id"])
+    paths = {item.path for item in candidates}
+    assert "packages/api" in paths
+
+
+@pytest.mark.asyncio
+async def test_create_scopes_accepts_detect_and_custom_paths(monkeypatch, tmp_path):
+    manager, store, continuous, status, _mirror = await _synced_remote(
+        monkeypatch, tmp_path
+    )
+
+    scopes = manager.create_scopes(
+        status["id"],
+        ["packages/api", "YinWang/br_feature_ADS_truck_0820"],
+    )
+
+    assert {tuple(item["included_dirs"]) for item in scopes} == {
+        ("packages/api",),
+        ("YinWang/br_feature_ADS_truck_0820",),
+    }
+    assert all(item["label"].startswith("ubuntu@10.0.0.8:/srv/code/demo") for item in scopes)
+    assert continuous.requests == []
+    assert len(store.knowledge_spaces) == 2
+    listed = manager.list_scopes(status["id"])
+    assert len(listed) == 2
+    assert manager._status(store.remote_projects[status["id"]])["stage"] != "analyzing"
+
+
+@pytest.mark.asyncio
+async def test_create_scopes_rejects_parent_and_missing_paths(monkeypatch, tmp_path):
+    manager, _store, _continuous, status, _mirror = await _synced_remote(
+        monkeypatch, tmp_path
+    )
+
+    with pytest.raises(RemoteProjectError, match="上级路径"):
+        manager.create_scopes(status["id"], ["../escape"])
+    with pytest.raises(RemoteProjectError, match="找不到目录"):
+        manager.create_scopes(status["id"], ["does-not-exist"])
+    with pytest.raises(RemoteProjectError, match="绝对路径"):
+        manager.create_scopes(status["id"], ["/srv/code/demo/packages"])
+    with pytest.raises(RemoteProjectError, match="请至少选择一个子目录"):
+        manager.create_scopes(status["id"], [])
+
+
+@pytest.mark.asyncio
+async def test_create_scopes_ignores_analyze_now_and_does_not_register(
+    monkeypatch, tmp_path
+):
+    from api.schemas import RemoteScopeCreateRequest
+
+    manager, _store, continuous, status, _mirror = await _synced_remote(
+        monkeypatch, tmp_path
+    )
+    request = RemoteScopeCreateRequest.model_validate(
+        {
+            "included_dirs": ["packages/api"],
+            "provider": "openai_compatible",
+            "analyze_now": True,
+        }
+    )
+
+    manager.create_scopes(status["id"], request.included_dirs)
+    assert continuous.requests == []
+
+
+@pytest.mark.asyncio
+async def test_root_and_child_analysis_use_different_repo_keys(monkeypatch, tmp_path):
+    manager, store, continuous, status, _mirror = await _synced_remote(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setattr(
+        "api.desktop_settings.load_desktop_settings", _compatible_settings
+    )
+    child = manager.create_scopes(status["id"], ["packages/api"])[0]
+
+    await manager.analyze(status["id"])
+    await manager.analyze_scope(status["id"], child["space_id"])
+
+    root_request, child_request = continuous.requests[0][0], continuous.requests[1][0]
+    assert root_request.space_id != child_request.space_id
+    assert root_request.repo_key != child_request.repo_key
+    assert root_request.repo_key == f"space_{root_request.space_id}"
+    assert child_request.included_dirs == ["packages/api"]
+    assert store.remote_projects[status["id"]]["stage"] == "analyzing"
+    children = [
+        item
+        for item in manager.list_scopes(status["id"])
+        if item["included_dirs"]
+    ]
+    assert children[0]["last_task_id"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_scope_requires_desktop_ai_settings(monkeypatch, tmp_path):
+    manager, _store, continuous, status, _mirror = await _synced_remote(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setattr("api.desktop_settings.load_desktop_settings", lambda: {})
+    child = manager.create_scopes(status["id"], ["packages/api"])[0]
+
+    with pytest.raises(RemoteProjectError, match="请先在设置中配置可用的 AI"):
+        await manager.analyze_scope(status["id"], child["space_id"])
+    assert continuous.requests == []
+
+
+@pytest.mark.asyncio
+async def test_remove_remote_project_deletes_child_spaces(monkeypatch, tmp_path):
+    manager, store, continuous, status, _mirror = await _synced_remote(
+        monkeypatch, tmp_path
+    )
+    monkeypatch.setattr(
+        "api.desktop_settings.load_desktop_settings", _compatible_settings
+    )
+    child = manager.create_scopes(status["id"], ["packages/api"])[0]
+    await manager.analyze_scope(status["id"], child["space_id"])
+    assert store.knowledge_spaces
+    assert continuous.projects
+
+    deleted = await manager.remove(status["id"])
+
+    assert deleted is True
+    assert store.knowledge_spaces == {}
+    assert continuous.projects == []
+    assert store.remote_projects == {}

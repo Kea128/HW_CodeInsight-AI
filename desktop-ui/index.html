@@ -178,14 +178,14 @@
         <p id="form-message" class="message"></p>
       </div>
       <div id="source-remote-panel" role="tabpanel" aria-labelledby="source-remote-tab" hidden>
-        <p class="hint">通过 SFTP 同步代码，并使用相同连接打开图形化终端。密码仅保存在 Windows 凭据管理器。</p>
+        <p class="hint">这里只连接和同步 Ubuntu，不选择 AI 模型。自定义 API 在「设置」里配置，同步完成后点「开始分析」。</p>
         <ol id="remote-flow" class="flow-steps" aria-label="Ubuntu 连接流程">
           <li data-stage="fingerprint">确认指纹</li>
           <li data-stage="connect">安全连接</li>
           <li data-stage="sync">同步代码</li>
           <li data-stage="analysis">AI 分析</li>
         </ol>
-        <p id="remote-ai-notice" class="notice">同步完成后请点卡片上的「开始分析」。密码只保存在 Windows 凭据管理器。</p>
+        <p id="remote-ai-notice" class="notice">连接 Ubuntu 与 AI 模型无关。自定义接口请在设置中保存，同步完成后点「开始分析」。</p>
         <form id="remote-form">
           <div class="row">
             <label>服务器 IP<input id="remote-host" required placeholder="192.168.1.100" autocomplete="off" /></label>
@@ -204,6 +204,31 @@
         </form>
         <p id="remote-message" class="message"></p>
       </div>
+    </aside>
+
+    <aside id="remote-scope-drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="remote-scope-drawer-title" aria-hidden="true" tabindex="-1">
+      <div class="drawer-header">
+        <h2 id="remote-scope-drawer-title">添加子分析</h2>
+        <button class="drawer-close ghost" data-close-drawer type="button" aria-label="关闭子分析对话框">关闭</button>
+      </div>
+      <p class="hint">在已同步的根目录上选择子仓。不会新建 SSH，也不会再同步整棵树。自定义 API 仍在「设置」里配置。</p>
+      <p id="remote-scope-target" class="meta"></p>
+      <form id="remote-scope-form">
+        <div class="settings-block">
+          <div class="row">
+            <p class="hint">可勾选探测到的子目录，或手动填写相对路径。</p>
+            <button id="remote-scope-detect-button" type="button" class="secondary">扫描子目录</button>
+          </div>
+          <div id="remote-scope-list" class="subdir-list">
+            <p class="empty">点「扫描子目录」，或在下方填写相对路径。</p>
+          </div>
+        </div>
+        <label>手动相对路径
+          <textarea id="remote-scope-custom" rows="3" placeholder="例如：YinWang/br_feature_ADS_truck_0820&#10;多个路径用逗号或换行分隔"></textarea>
+        </label>
+        <button type="submit">创建子分析</button>
+      </form>
+      <p id="remote-scope-message" class="message"></p>
     </aside>
 
     <aside id="settings-drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="settings-drawer-title" aria-hidden="true" tabindex="-1">

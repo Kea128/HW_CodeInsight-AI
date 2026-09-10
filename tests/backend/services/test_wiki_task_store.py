@@ -92,6 +92,91 @@ def test_remote_project_round_trip_never_contains_password(tmp_path):
     assert b"server-password" not in (tmp_path / "tasks.db").read_bytes()
 
 
+def test_remote_project_can_persist_without_ai_provider(tmp_path):
+    store = WikiTaskStore(str(tmp_path / "tasks.db"))
+    project = {
+        "id": "remote-no-ai",
+        "host": "10.0.0.8",
+        "port": 22,
+        "username": "ubuntu",
+        "remote_path": "/srv/code/demo",
+        "local_path": str(tmp_path / "mirror"),
+        "credential_id": "remote-no-ai",
+        "provider": None,
+        "model": None,
+        "language": "zh",
+        "host_fingerprint": "SHA256:test",
+        "enabled": True,
+        "poll_seconds": 60,
+        "last_sync_at": None,
+        "last_error": None,
+        "stage": "saved",
+    }
+
+    store.save_remote_project(project)
+    restored = store.get_remote_project("remote-no-ai")
+
+    assert restored["provider"] is None
+    assert restored["model"] is None
+    assert restored["stage"] == "saved"
+
+
+def test_migration_10_allows_null_provider_on_existing_remote_project(tmp_path):
+    path = tmp_path / "v9.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL
+            );
+            INSERT INTO schema_migrations VALUES (9, 1);
+            CREATE TABLE remote_projects (
+                id TEXT PRIMARY KEY,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 22,
+                username TEXT NOT NULL,
+                remote_path TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                credential_id TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT 'ollama',
+                model TEXT,
+                language TEXT NOT NULL DEFAULT 'zh',
+                host_fingerprint TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                poll_seconds INTEGER NOT NULL DEFAULT 60,
+                last_sync_at INTEGER,
+                last_error TEXT,
+                stage TEXT NOT NULL DEFAULT 'saved',
+                files_seen INTEGER NOT NULL DEFAULT 0,
+                files_excluded INTEGER NOT NULL DEFAULT 0,
+                files_oversize INTEGER NOT NULL DEFAULT 0,
+                symlinks_skipped INTEGER NOT NULL DEFAULT 0,
+                dirs_seen INTEGER NOT NULL DEFAULT 0,
+                current_path TEXT,
+                progress_message TEXT,
+                sync_started_at INTEGER,
+                progress_updated_at INTEGER,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO remote_projects (
+                id, host, port, username, remote_path, local_path,
+                credential_id, provider, updated_at
+            ) VALUES (
+                'remote-old', '10.0.0.8', 22, 'ubuntu', '/srv/code',
+                '/tmp/mirror', 'remote-old', 'ollama', 1
+            );
+            """
+        )
+
+    store = WikiTaskStore(str(path))
+    existing = store.get_remote_project("remote-old")
+    assert existing["provider"] == "ollama"
+    existing["provider"] = None
+    store.save_remote_project(existing)
+
+    assert store.get_remote_project("remote-old")["provider"] is None
+
+
 @pytest.mark.asyncio
 async def test_registry_recovers_only_missing_pages(tmp_path):
     store = WikiTaskStore(str(tmp_path / "tasks.db"))
@@ -205,7 +290,7 @@ def test_migration_from_v4_retains_terminal_tasks_and_events(tmp_path):
             )
         ]
     assert "pending_changes" in columns
-    assert versions == [4, 5, 6, 7, 8, 9]
+    assert versions == [4, 5, 6, 7, 8, 9, 10]
 
 
 def test_fresh_database_runs_every_migration(tmp_path):
@@ -220,7 +305,7 @@ def test_fresh_database_runs_every_migration(tmp_path):
             )
         ]
 
-    assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 
 def test_terminal_event_retention_keeps_recent_history(tmp_path):

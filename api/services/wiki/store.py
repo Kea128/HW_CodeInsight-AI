@@ -14,7 +14,7 @@ from api.schemas.knowledge import KnowledgeSpace
 from api.utils import deepwiki_root
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def default_database_path() -> str:
@@ -60,6 +60,7 @@ class WikiTaskStore:
                 7: self._migration_7_knowledge_spaces,
                 8: self._migration_8_remote_progress,
                 9: self._migration_9_remote_heartbeat,
+                10: self._migration_10_nullable_remote_provider,
             }
             for version in range(current + 1, SCHEMA_VERSION + 1):
                 migration = migrations[version]
@@ -213,6 +214,65 @@ class WikiTaskStore:
                 "progress_message": "TEXT",
                 "sync_started_at": "INTEGER",
             },
+        )
+
+    @staticmethod
+    def _migration_10_nullable_remote_provider(connection: sqlite3.Connection) -> None:
+        existing = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='remote_projects'"
+        ).fetchone()
+        if not existing:
+            return
+        connection.executescript(
+            """
+            CREATE TABLE remote_projects_new (
+                id TEXT PRIMARY KEY,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 22,
+                username TEXT NOT NULL,
+                remote_path TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                credential_id TEXT NOT NULL,
+                provider TEXT,
+                model TEXT,
+                language TEXT NOT NULL DEFAULT 'zh',
+                host_fingerprint TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                poll_seconds INTEGER NOT NULL DEFAULT 60,
+                last_sync_at INTEGER,
+                last_error TEXT,
+                stage TEXT NOT NULL DEFAULT 'saved',
+                files_seen INTEGER NOT NULL DEFAULT 0,
+                files_excluded INTEGER NOT NULL DEFAULT 0,
+                files_oversize INTEGER NOT NULL DEFAULT 0,
+                symlinks_skipped INTEGER NOT NULL DEFAULT 0,
+                dirs_seen INTEGER NOT NULL DEFAULT 0,
+                current_path TEXT,
+                progress_message TEXT,
+                sync_started_at INTEGER,
+                progress_updated_at INTEGER,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO remote_projects_new (
+                id, host, port, username, remote_path, local_path,
+                credential_id, provider, model, language, host_fingerprint,
+                enabled, poll_seconds, last_sync_at, last_error, stage,
+                files_seen, files_excluded, files_oversize, symlinks_skipped,
+                dirs_seen, current_path, progress_message, sync_started_at,
+                progress_updated_at, updated_at
+            )
+            SELECT
+                id, host, port, username, remote_path, local_path,
+                credential_id, provider, model, language, host_fingerprint,
+                enabled, poll_seconds, last_sync_at, last_error, stage,
+                files_seen, files_excluded, files_oversize, symlinks_skipped,
+                dirs_seen, current_path, progress_message, sync_started_at,
+                progress_updated_at, updated_at
+            FROM remote_projects;
+            DROP TABLE remote_projects;
+            ALTER TABLE remote_projects_new RENAME TO remote_projects;
+            """
         )
 
     @classmethod
@@ -483,7 +543,7 @@ class WikiTaskStore:
                     project["remote_path"],
                     project["local_path"],
                     project["credential_id"],
-                    project.get("provider", "ollama"),
+                    project.get("provider"),
                     project.get("model"),
                     project.get("language", "zh"),
                     project.get("host_fingerprint"),
@@ -594,13 +654,15 @@ class WikiTaskStore:
         provider: str | None,
         model: str | None,
         last_task_id: str | None = None,
+        parent_workspace: str | None = None,
+        label: str | None = None,
     ) -> KnowledgeSpace:
         from api.services.knowledge.spaces import compute_space_id, knowledge_label
 
         now = int(time.time() * 1000)
         space_id = compute_space_id(workspace_root, included_dirs, language)
-        label = knowledge_label(workspace_root, included_dirs)
-        parent = os.path.normpath(workspace_root)
+        label = label or knowledge_label(workspace_root, included_dirs)
+        parent = parent_workspace or os.path.normpath(workspace_root)
         with self._lock, self._connect() as connection:
             existing = connection.execute(
                 "SELECT created_at, last_task_id FROM knowledge_spaces WHERE space_id = ?",
@@ -671,6 +733,13 @@ class WikiTaskStore:
                 (space_id,),
             ).fetchone()
         return self._decode_space(row) if row else None
+
+    def delete_knowledge_space(self, space_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM knowledge_spaces WHERE space_id = ?", (space_id,)
+            )
+        return cursor.rowcount > 0
 
     def set_knowledge_space_task(self, space_id: str, task_id: str) -> None:
         now = int(time.time() * 1000)

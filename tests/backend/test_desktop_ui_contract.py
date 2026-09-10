@@ -22,7 +22,16 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert "remoteProgressText" in script
     assert "codeinsight-remote-draft" in script
     assert "开始分析" in script
-    assert "analyze_now = false" in script
+    assert "分析整个根目录" in script
+    assert "添加子分析" in script
+    assert 'id="remote-scope-drawer"' in html
+    assert 'id="remote-scope-form"' in html
+    assert 'id="remote-scope-detect-button"' in html
+    assert 'id="remote-scope-list"' in html
+    assert 'id="remote-scope-custom"' in html
+    assert "/remote/projects/${encodeURIComponent(project.id)}/analyze" in script
+    assert "/scopes/detect" in script
+    assert "/scopes/" in script
     assert 'timeout: 45000' in script
     assert 'timeout: 60000' in script
     submit_handler = script.split(
@@ -32,6 +41,10 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     )[0]
     assert "/remote/fingerprint" in submit_handler
     assert "remembered.value !== probe.fingerprint" in submit_handler
+    assert "savedModelProvider" not in submit_handler
+    assert "savedModelId" not in submit_handler
+    assert "analyze_now" not in submit_handler
+    assert "modelConfigured" not in submit_handler
     assert "连接并同步" in html
     write_draft = script.split("function writeRemoteDraft()", maxsplit=1)[1].split(
         "function rememberRemoteFingerprint", maxsplit=1
@@ -49,6 +62,17 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
         'document.querySelector("#connect-ubuntu-button").addEventListener', maxsplit=1
     )[0]
     assert "modelConfigured" not in add_project_handler
+
+    scope_handler = script.split(
+        'document.querySelector("#remote-scope-form").addEventListener("submit"',
+        maxsplit=1,
+    )[1].split(
+        'document.querySelector("#project-form").addEventListener("submit"',
+        maxsplit=1,
+    )[0]
+    assert "savedModelProvider" not in scope_handler
+    assert "analyze_now" not in scope_handler
+    assert "included_dirs: included" in scope_handler
 
 
 def test_terminal_auth_token_is_sent_as_subprotocol_not_url_or_message():

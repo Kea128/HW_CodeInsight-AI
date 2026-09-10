@@ -141,10 +141,13 @@ describe("desktop workspace UI", () => {
       expect(card.textContent).toContain("可能卡住");
       expect(document.querySelector("#model-status").textContent).toContain("未测试");
       expect(document.querySelector("#ai-usability-hint").textContent).toContain("测试连接");
-      const analyze = [...card.querySelectorAll("button")].find((button) => button.textContent === "开始分析");
+      const analyze = [...card.querySelectorAll("button")].find((button) => button.textContent === "分析整个根目录");
       expect(analyze).toBeTruthy();
       expect(analyze.disabled).toBe(true);
       expect(analyze.title).toContain("同步完成后");
+      const addScope = [...card.querySelectorAll("button")].find((button) => button.textContent === "添加子分析");
+      expect(addScope).toBeTruthy();
+      expect(addScope.disabled).toBe(true);
     });
   });
 
