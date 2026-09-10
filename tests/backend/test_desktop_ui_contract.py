@@ -18,6 +18,12 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert 'id="operation-log"' in html
     assert 'id="copy-operation-log-button"' in html
     assert "/desktop/logs" in script
+    assert "/desktop/operation-log" in script
+    assert "read_operation_log" in script
+    assert 'id="workbench"' in html
+    assert 'id="workbench-splitter-1"' in html
+    assert 'id="workbench-splitter-2"' in html
+    assert "codeinsight-workbench-widths" in script
     assert 'id="knowledge-space-list"' in html
     assert 'id="task-list"' in html
     assert "function taskLocation" in script
@@ -39,6 +45,8 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert 'id="remote-scope-custom"' in html
     assert "/remote/projects/${encodeURIComponent(project.id)}/analyze" in script
     assert "/scopes/detect" in script
+    assert "/detect-scopes" in script
+    assert "function detectRemoteScopeCandidates" in script
     assert "/scopes/" in script
     assert 'timeout: 45000' in script
     assert 'timeout: 60000' in script

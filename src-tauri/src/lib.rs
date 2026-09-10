@@ -66,6 +66,27 @@ fn daemon_log_file() -> std::path::PathBuf {
     root.join("CodeInsight-AI").join("daemon.log")
 }
 
+fn operation_log_file() -> std::path::PathBuf {
+    daemon_log_file()
+        .parent()
+        .map(|directory| directory.join("operation.log"))
+        .unwrap_or_else(|| std::env::temp_dir().join("operation.log"))
+}
+
+fn tail_text_file(path: &std::path::Path, limit: usize) -> Result<String, String> {
+    if !path.is_file() {
+        return Ok(String::new());
+    }
+    let text = std::fs::read_to_string(path).map_err(|error| describe_error("无法读取操作日志", error))?;
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(limit.max(1));
+    Ok(lines[start..].join("\n"))
+}
+
 #[cfg(target_os = "windows")]
 fn generate_desktop_token() -> String {
     #[link(name = "bcrypt")]
@@ -860,6 +881,12 @@ fn daemon_log_path() -> String {
 }
 
 #[tauri::command]
+fn read_operation_log(limit: Option<u32>) -> Result<String, String> {
+    let cap = limit.unwrap_or(200).clamp(1, 400) as usize;
+    tail_text_file(&operation_log_file(), cap)
+}
+
+#[tauri::command]
 fn open_daemon_log_directory(app: tauri::AppHandle) -> Result<(), String> {
     let path = daemon_log_file();
     let directory = path
@@ -906,6 +933,7 @@ pub fn run() {
             cancel_update,
             open_manual_update,
             daemon_log_path,
+            read_operation_log,
             open_daemon_log_directory,
             restart_app,
             desktop_session_token,
@@ -992,6 +1020,16 @@ mod tests {
             "  TCP    127.0.0.1:18001   0.0.0.0:0    LISTENING    99\r\n",
         );
         assert_eq!(parse_netstat_listener_pids(output, 8001), vec![4321]);
+    }
+
+    #[test]
+    fn operation_log_tails_last_lines() {
+        let dir = std::env::temp_dir().join("codeinsight-operation-log-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("operation.log");
+        std::fs::write(&path, "one\n\ntwo\nthree\n").unwrap();
+        assert_eq!(tail_text_file(&path, 2).unwrap(), "two\nthree");
+        assert_eq!(tail_text_file(&dir.join("missing.log"), 10).unwrap(), "");
     }
 
     #[test]

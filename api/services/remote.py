@@ -853,12 +853,12 @@ class RemoteSyncManager:
         project = self.store.get_remote_project(project_id)
         if not project:
             raise KeyError(project_id)
-        local_path = project["local_path"]
-        if not Path(local_path).is_dir():
-            raise RemoteProjectError("请先完成同步后再探测子目录")
-        from api.services.knowledge.spaces import detect_subrepos
+        local_path = Path(project["local_path"])
+        if not local_path.is_dir():
+            raise RemoteProjectError("请先完成同步后再扫描子目录")
+        from api.services.knowledge.spaces import list_child_candidates
 
-        return detect_subrepos(local_path)
+        return list_child_candidates(local_path)
 
     def create_scopes(
         self, project_id: str, included_dirs: list[str]

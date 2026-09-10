@@ -201,11 +201,13 @@ def _remember_probe(*, ok: bool, message: str, model: str | None) -> None:
 
 
 @router.get("/desktop/logs")
+@router.get("/desktop/operation-log")
 async def get_desktop_logs(limit: int = 200):
+    cap = max(1, min(limit, 400))
     return {
         "path": str(operation_log_path()),
-        "events": recent_events(max(1, min(limit, 400))),
-        "text": export_text(max(1, min(limit, 400))),
+        "events": recent_events(cap),
+        "text": export_text(cap),
     }
 
 

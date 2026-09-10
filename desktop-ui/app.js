@@ -1403,6 +1403,24 @@ document.querySelector("#remote-form").addEventListener("input", () => {
   setRemoteFlow("fingerprint");
 });
 
+async function detectRemoteScopeCandidates(projectId) {
+  const encoded = encodeURIComponent(projectId);
+  const paths = [
+    [`/remote/projects/${encoded}/scopes/detect`, { method: "POST", body: "{}" }],
+    [`/remote/projects/${encoded}/detect-scopes`, { method: "POST", body: "{}" }],
+    [`/remote/projects/${encoded}/scopes/detect`, { method: "GET" }],
+  ];
+  let lastError = null;
+  for (const [path, options] of paths) {
+    try {
+      return await api(path, options);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("扫描子目录失败");
+}
+
 document.querySelector("#remote-scope-detect-button").addEventListener("click", async () => {
   const list = document.querySelector("#remote-scope-list");
   const message = document.querySelector("#remote-scope-message");
@@ -1414,10 +1432,7 @@ document.querySelector("#remote-scope-detect-button").addEventListener("click", 
   message.className = "message";
   message.textContent = "";
   try {
-    const detected = await api(
-      `/remote/projects/${encodeURIComponent(scopeProjectId)}/scopes/detect`,
-      { method: "POST" },
-    );
+    const detected = await detectRemoteScopeCandidates(scopeProjectId);
     list.replaceChildren();
     if (!detected.candidates.length) {
       list.innerHTML = '<p class="empty">未发现子仓，请手动填写相对路径。</p>';
@@ -1433,7 +1448,13 @@ document.querySelector("#remote-scope-detect-button").addEventListener("click", 
       list.append(label);
     });
   } catch (error) {
-    list.innerHTML = `<p class="message error">${errorMessage(error)}</p>`;
+    const detail = errorMessage(error);
+    const missing = error?.status === 404 || /not found/i.test(detail);
+    list.innerHTML = `<p class="message error">${
+      missing
+        ? "未能扫描同步副本。请手动填写相对路径，例如 YinWang/br_feature_ADS_truck_0820"
+        : detail
+    }</p>`;
   }
 });
 
@@ -1538,16 +1559,76 @@ document.querySelector("#connect-ubuntu-button").addEventListener("click", () =>
   openDrawer("project-drawer");
   selectSource(true);
 });
+function formatOperationLogLines(text) {
+  if (!text || !String(text).trim()) return "";
+  return String(text).split("\n").map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return "";
+    try {
+      const record = JSON.parse(trimmed);
+      if (record && (record.event || record.message)) {
+        const extra = record.data && Object.keys(record.data).length
+          ? ` ${JSON.stringify(record.data)}`
+          : "";
+        return `${record.ts || ""} [${record.level || "info"}] ${record.event || ""}: ${record.message || ""}${extra}`.trim();
+      }
+    } catch {
+      /* keep the original line */
+    }
+    return line;
+  }).filter(Boolean).join("\n");
+}
+
+async function readOperationLogFromHost() {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!invoke) return "";
+  const text = await invoke("read_operation_log", { limit: 200 });
+  return formatOperationLogLines(text);
+}
+
+async function fetchOperationLogText() {
+  const paths = ["/desktop/logs?limit=200", "/desktop/operation-log?limit=200"];
+  let lastError = null;
+  for (const path of paths) {
+    try {
+      const payload = await api(path);
+      if (payload?.text) return payload.text;
+      if (Array.isArray(payload?.events) && payload.events.length) {
+        return payload.events.map((record) => {
+          const extra = record.data && Object.keys(record.data).length
+            ? ` ${JSON.stringify(record.data)}`
+            : "";
+          return `${record.ts || ""} [${record.level || "info"}] ${record.event || ""}: ${record.message || ""}${extra}`.trim();
+        }).filter(Boolean).join("\n");
+      }
+      return "";
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("读取操作日志失败");
+}
+
 async function loadOperationLog() {
   const box = document.querySelector("#operation-log");
   if (!box) return;
+  const empty = "暂无操作记录。连接 Ubuntu 或开始分析后会写在这里。";
   try {
-    const payload = await api("/desktop/logs?limit=200");
-    box.textContent = payload.text || "暂无操作记录。连接 Ubuntu 或开始分析后会写在这里。";
-    box.scrollTop = box.scrollHeight;
+    const text = await fetchOperationLogText();
+    box.textContent = text || empty;
   } catch (error) {
-    box.textContent = `读取操作日志失败：${errorMessage(error)}`;
+    try {
+      const text = await readOperationLogFromHost();
+      box.textContent = text || empty;
+    } catch {
+      if (error?.status === 404 || /not found/i.test(errorMessage(error))) {
+        box.textContent = `${empty}\n\n分析引擎暂未提供日志接口，可点「打开日志目录」查看 operation.log。`;
+      } else {
+        box.textContent = `读取操作日志失败：${errorMessage(error)}`;
+      }
+    }
   }
+  box.scrollTop = box.scrollHeight;
 }
 
 document.querySelector("#settings-button").addEventListener("click", () => {
@@ -1786,10 +1867,15 @@ document.querySelector("#copy-engine-diagnostics-button").addEventListener("clic
   ].join("\n");
   let text = diagnostics;
   try {
-    const payload = await api("/desktop/logs?limit=80");
+    const payload = await api("/desktop/logs?limit=80").catch(() => api("/desktop/operation-log?limit=80"));
     text += `\n\n--- operation.log ---\n${payload.text || ""}`;
   } catch (error) {
-    text += `\n\noperation.log: ${errorMessage(error)}`;
+    try {
+      const fileText = await readOperationLogFromHost();
+      text += `\n\n--- operation.log ---\n${fileText || errorMessage(error)}`;
+    } catch {
+      text += `\n\noperation.log: ${errorMessage(error)}`;
+    }
   }
   try {
     await navigator.clipboard.writeText(text);
@@ -2068,11 +2154,164 @@ document.querySelector("#ask-form").addEventListener("submit", async (event) => 
   }
 });
 
+const WORKBENCH_WIDTHS_KEY = "codeinsight-workbench-widths";
+const WORKBENCH_MIN_PX = 200;
+
+function defaultWorkbenchWidths() {
+  return [1 / 3, 1 / 3, 1 / 3];
+}
+
+function workbenchStacked() {
+  return Boolean(window.matchMedia?.("(max-width: 1100px)")?.matches);
+}
+
+function readWorkbenchWidths() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WORKBENCH_WIDTHS_KEY) || "null");
+    if (
+      Array.isArray(parsed)
+      && parsed.length === 3
+      && parsed.every((value) => typeof value === "number" && value > 0)
+    ) {
+      const total = parsed[0] + parsed[1] + parsed[2];
+      return parsed.map((value) => value / total);
+    }
+  } catch {
+    /* use equal columns */
+  }
+  return defaultWorkbenchWidths();
+}
+
+function applyWorkbenchWidths(fractions) {
+  const cols = document.querySelectorAll("#workbench .workbench-col");
+  if (cols.length !== 3) return;
+  cols.forEach((col, index) => {
+    col.style.flexGrow = String(Math.max(fractions[index], 0.05) * 1000);
+    col.style.flexShrink = "1";
+    col.style.flexBasis = "0";
+    col.style.minWidth = `${WORKBENCH_MIN_PX}px`;
+    col.style.width = "";
+  });
+}
+
+function persistWorkbenchWidths() {
+  const cols = [...document.querySelectorAll("#workbench .workbench-col")];
+  if (cols.length !== 3) return;
+  const widths = cols.map((col) => col.getBoundingClientRect().width);
+  const total = widths.reduce((sum, width) => sum + width, 0);
+  if (total <= 0) return;
+  localStorage.setItem(WORKBENCH_WIDTHS_KEY, JSON.stringify(widths.map((width) => width / total)));
+}
+
+function resetStackedWorkbench() {
+  document.querySelectorAll("#workbench .workbench-col").forEach((col) => {
+    col.style.flexGrow = "";
+    col.style.flexShrink = "";
+    col.style.flexBasis = "";
+    col.style.width = "";
+    col.style.minWidth = "";
+  });
+}
+
+function initWorkbenchResize() {
+  const workbench = document.querySelector("#workbench");
+  if (!workbench) return;
+  const apply = () => {
+    if (workbenchStacked()) {
+      resetStackedWorkbench();
+      return;
+    }
+    applyWorkbenchWidths(readWorkbenchWidths());
+  };
+  apply();
+  window.addEventListener("resize", apply);
+  workbench.querySelectorAll(".workbench-splitter").forEach((splitter, splitterIndex) => {
+    const startDrag = (clientX) => {
+      if (workbenchStacked()) return;
+      const cols = [...workbench.querySelectorAll(".workbench-col")];
+      const left = cols[splitterIndex];
+      const right = cols[splitterIndex + 1];
+      if (!left || !right) return;
+      const startLeft = left.getBoundingClientRect().width;
+      const startRight = right.getBoundingClientRect().width;
+      document.body.classList.add("workbench-resizing");
+      workbench.classList.add("is-resizing");
+      const onMove = (event) => {
+        const point = event.touches ? event.touches[0] : event;
+        if (!point) return;
+        if (event.cancelable) event.preventDefault();
+        let nextLeft = startLeft + (point.clientX - clientX);
+        let nextRight = startRight - (point.clientX - clientX);
+        if (nextLeft < WORKBENCH_MIN_PX) {
+          nextRight -= WORKBENCH_MIN_PX - nextLeft;
+          nextLeft = WORKBENCH_MIN_PX;
+        }
+        if (nextRight < WORKBENCH_MIN_PX) {
+          nextLeft -= WORKBENCH_MIN_PX - nextRight;
+          nextRight = WORKBENCH_MIN_PX;
+        }
+        if (nextLeft < WORKBENCH_MIN_PX || nextRight < WORKBENCH_MIN_PX) return;
+        left.style.flexGrow = "0";
+        right.style.flexGrow = "0";
+        left.style.flexShrink = "0";
+        right.style.flexShrink = "0";
+        left.style.flexBasis = `${nextLeft}px`;
+        right.style.flexBasis = `${nextRight}px`;
+        left.style.width = `${nextLeft}px`;
+        right.style.width = `${nextRight}px`;
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.removeEventListener("touchmove", onMove);
+        document.removeEventListener("touchend", onUp);
+        document.body.classList.remove("workbench-resizing");
+        workbench.classList.remove("is-resizing");
+        persistWorkbenchWidths();
+        apply();
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.addEventListener("touchmove", onMove, { passive: false });
+      document.addEventListener("touchend", onUp);
+    };
+    splitter.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      startDrag(event.clientX);
+    });
+    splitter.addEventListener("touchstart", (event) => {
+      if (event.touches[0]) startDrag(event.touches[0].clientX);
+    }, { passive: true });
+    splitter.addEventListener("keydown", (event) => {
+      if (workbenchStacked()) return;
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const cols = [...workbench.querySelectorAll(".workbench-col")];
+      const left = cols[splitterIndex];
+      const right = cols[splitterIndex + 1];
+      if (!left || !right) return;
+      const step = event.shiftKey ? 48 : 20;
+      const delta = event.key === "ArrowLeft" ? -step : step;
+      const nextLeft = Math.max(WORKBENCH_MIN_PX, left.getBoundingClientRect().width + delta);
+      const nextRight = Math.max(WORKBENCH_MIN_PX, right.getBoundingClientRect().width - delta);
+      if (nextLeft === WORKBENCH_MIN_PX && delta < 0) return;
+      if (nextRight === WORKBENCH_MIN_PX && delta > 0) return;
+      left.style.flexGrow = "0";
+      right.style.flexGrow = "0";
+      left.style.flexBasis = `${nextLeft}px`;
+      right.style.flexBasis = `${nextRight}px`;
+      persistWorkbenchWidths();
+      apply();
+    });
+  });
+}
+
 document.querySelector("#ollama-tier").value =
   localStorage.getItem("codeinsight-ollama-tier") || "auto";
 selectWorkspaceSource(localStorage.getItem("codeinsight-workspace-source") === "remote");
 updateModelForm();
 restoreRemoteDraft();
+initWorkbenchResize();
 initializeUpdateProgress();
 initializeEngineDiagnostics().finally(waitForEngine);
 setInterval(refreshWorkspace, 4000);

@@ -112,6 +112,13 @@ function route(url, options = {}) {
   if (path === "/desktop/ollama/status") {
     return response({ state: "ready", ready: true, selected_tier: "balanced", tiers: [] });
   }
+  if (path === "/desktop/logs" || path === "/desktop/operation-log") {
+    return response({
+      path: "C:/Users/test/AppData/Local/CodeInsight-AI/operation.log",
+      events: [{ ts: "2026-09-10T11:00:00", level: "info", event: "sync_ok", message: "同步完成" }],
+      text: "2026-09-10T11:00:00 [info] sync_ok: 同步完成",
+    });
+  }
   return response({ detail: "not found" }, 404);
 }
 
@@ -217,6 +224,21 @@ describe("desktop workspace UI", () => {
       const remote = document.querySelector("#remote-project-list").textContent;
       expect(remote).toContain("/home/WorkSpace/YinWang/br_feature_ADS_truck_0820");
       expect(remote).toContain("gyk@10.39.48.26");
+    });
+  });
+
+  it("loads operation log from the engine and keeps equal workbench columns", async () => {
+    await boot();
+    expect(document.querySelector("#workbench-splitter-1")).toBeTruthy();
+    expect(document.querySelector("#workbench-splitter-2")).toBeTruthy();
+    const cols = document.querySelectorAll("#workbench .workbench-col");
+    expect(cols).toHaveLength(3);
+    expect(new Set([...cols].map((col) => col.style.flexGrow)).size).toBe(1);
+    expect(Number(cols[0].style.flexGrow)).toBeCloseTo(333.333, 2);
+    document.querySelector("#settings-button").click();
+    await vi.waitFor(() => {
+      expect(document.querySelector("#operation-log").textContent).toContain("同步完成");
+      expect(document.querySelector("#operation-log").textContent).not.toMatch(/not found/i);
     });
   });
 

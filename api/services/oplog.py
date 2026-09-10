@@ -71,8 +71,38 @@ def log_event(event: str, message: str, *, level: str = "info", **data: Any) -> 
     log("oplog %s %s", event, record["message"])
 
 
+def _events_from_file(limit: int) -> list[dict[str, Any]]:
+    path = operation_log_path()
+    if not path.is_file():
+        return []
+    try:
+        size = path.stat().st_size
+        with path.open("r", encoding="utf-8") as handle:
+            if size > 256_000:
+                handle.seek(max(0, size - 256_000))
+                handle.readline()
+            raw = handle.read()
+    except OSError:
+        return []
+    parsed: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            parsed.append(item)
+    cap = limit if limit > 0 else MAX_EVENTS
+    return parsed[-cap:]
+
+
 def recent_events(limit: int = 200) -> list[dict[str, Any]]:
     items = list(_events)
+    if not items:
+        return _events_from_file(limit if limit > 0 else MAX_EVENTS)
     if limit > 0:
         items = items[-limit:]
     return items
@@ -84,7 +114,8 @@ def export_text(limit: int = 300) -> str:
         extra = record.get("data") or {}
         suffix = f" {json.dumps(extra, ensure_ascii=False)}" if extra else ""
         lines.append(
-            f"{record['ts']} [{record['level']}] {record['event']}: {record['message']}{suffix}"
+            f"{record.get('ts', '')} [{record.get('level', 'info')}] "
+            f"{record.get('event', '')}: {record.get('message', '')}{suffix}"
         )
     return "\n".join(lines)
 

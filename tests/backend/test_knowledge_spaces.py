@@ -5,6 +5,7 @@ from api.services.knowledge.spaces import (
     compute_space_id,
     detect_subrepos,
     knowledge_label,
+    list_child_candidates,
     upsert_spaces,
 )
 from api.services.wiki.store import WikiTaskStore  # noqa: E402
@@ -32,6 +33,7 @@ def test_detect_subrepos_lists_packages_and_git(tmp_path: Path):
     assert "apps/web" in paths
     assert "worker" in paths
     assert "node_modules" not in paths
+    assert {item.path for item in list_child_candidates(tmp_path)} == paths
 
 
 def test_upsert_spaces_creates_one_space_per_subdir(tmp_path, monkeypatch):

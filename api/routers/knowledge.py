@@ -64,7 +64,10 @@ async def detect_knowledge_spaces(request: KnowledgeDetectRequest):
             candidates=candidates,
         )
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        message = str(error)
+        if "does not exist" in message.lower() or "must be a directory" in message.lower():
+            message = "目录不存在，请检查工作目录路径"
+        raise HTTPException(status_code=400, detail=message) from error
 
 
 @router.post("/spaces", response_model=KnowledgeSpaceCreateResponse)

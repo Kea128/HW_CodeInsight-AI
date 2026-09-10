@@ -72,3 +72,58 @@ def test_cors_documents_actual_tauri_production_origins(origin, allowed):
         assert response.headers["access-control-allow-origin"] == origin
     else:
         assert "access-control-allow-origin" not in response.headers
+
+
+def test_detect_remote_scopes_routes_scan_local_copy(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "is_development", True)
+    monkeypatch.delenv("CODEINSIGHT_DESKTOP_TOKEN", raising=False)
+    from api.routers import remote
+
+    (tmp_path / "YinWang" / "br_feature_ADS_truck_0820").mkdir(parents=True)
+    project = {
+        "id": "remote-abc123",
+        "remote_path": "/home/WorkSpace",
+        "local_path": str(tmp_path),
+    }
+
+    class FakeManager:
+        store = type("Store", (), {"get_remote_project": staticmethod(lambda pid: project if pid == "remote-abc123" else None)})()
+
+        def detect_scopes(self, project_id):
+            from api.services.knowledge.spaces import list_child_candidates
+
+            assert project_id == "remote-abc123"
+            return list_child_candidates(tmp_path)
+
+    monkeypatch.setattr(remote, "manager", FakeManager())
+
+    with TestClient(main.app) as client:
+        for method, path in (
+            ("POST", "/remote/projects/remote-abc123/scopes/detect"),
+            ("GET", "/remote/projects/remote-abc123/scopes/detect"),
+            ("POST", "/remote/projects/remote-abc123/detect-scopes"),
+        ):
+            response = client.request(method, path)
+            assert response.status_code == 200, f"{method} {path}: {response.text}"
+            paths = {item["path"] for item in response.json()["candidates"]}
+            assert "YinWang" in paths
+
+
+def test_desktop_logs_routes_return_file_backed_events(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "is_development", False)
+    monkeypatch.setenv("CODEINSIGHT_DESKTOP_TOKEN", "desktop-secret")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    from api.services.oplog import clear_events_for_tests, log_event
+
+    clear_events_for_tests()
+    log_event("sync_ok", "同步完成", host="10.39.48.26")
+
+    with TestClient(main.app) as client:
+        headers = {"X-CodeInsight-Token": "desktop-secret"}
+        for path in ("/desktop/logs", "/desktop/operation-log"):
+            response = client.get(f"{path}?limit=50", headers=headers)
+            assert response.status_code == 200, path
+            body = response.json()
+            assert "同步完成" in body["text"]
+            assert body["events"][-1]["event"] == "sync_ok"
+            assert str(tmp_path / "CodeInsight-AI" / "operation.log") == body["path"]

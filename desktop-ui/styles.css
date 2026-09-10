@@ -134,19 +134,44 @@ main {
   min-height: 0;
 }
 .workbench {
-  display: grid;
+  display: flex;
   flex: 1 1 auto;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(0, 1.4fr);
-  gap: 12px;
+  gap: 0;
   align-items: stretch;
   min-height: 0;
 }
 .workbench-col {
   display: flex;
+  flex: 1 1 0;
   flex-direction: column;
-  min-width: 0;
+  min-width: 200px;
   min-height: 0;
   padding: 12px;
+}
+.workbench-splitter {
+  flex: 0 0 10px;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.workbench-splitter::before {
+  content: "";
+  position: absolute;
+  inset: 10px 4px;
+  border-radius: 99px;
+  background: var(--line);
+  opacity: .75;
+}
+.workbench-splitter:hover::before,
+.workbench-splitter:focus-visible::before,
+.workbench.is-resizing .workbench-splitter:hover::before {
+  background: var(--accent);
+  opacity: 1;
+}
+body.workbench-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 .list-scroll {
   flex: 1 1 auto;
@@ -427,7 +452,6 @@ form.settings-section { margin-top: 0; padding-top: 0; border-top: 0; }
     --fs-section: 18px;
     --fs-title: 22px;
   }
-  .workbench { gap: 14px; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(0, 1.4fr); }
   .workbench-col { padding: 14px; }
   .task, .remote-project, .continuous-project { padding: 12px 14px; }
   .result-drawer { width: min(920px, 52vw); }
@@ -443,15 +467,16 @@ form.settings-section { margin-top: 0; padding-top: 0; border-top: 0; }
   }
   main { padding: 18px 32px 24px; }
   .terminal-panel { left: 32px; right: 32px; }
-  .workbench { gap: 20px; }
+  .workbench-splitter { flex-basis: 12px; }
 }
 
 @media (max-width: 1100px) {
   body { height: auto; overflow: auto; }
   .app-header { grid-template-columns: 1fr auto; }
   .status-cluster { grid-column: 1 / -1; justify-content: flex-start; }
-  .workbench { grid-template-columns: 1fr; min-height: 0; }
-  .workbench-col { height: auto; }
+  .workbench { flex-direction: column; min-height: 0; }
+  .workbench-splitter { display: none; }
+  .workbench-col { flex: 1 1 auto !important; width: auto !important; min-width: 0 !important; height: auto; }
   .list-scroll { max-height: 48vh; }
 }
 
@@ -466,6 +491,6 @@ form.settings-section { margin-top: 0; padding-top: 0; border-top: 0; }
   .setup-banner > * { grid-column: 1; }
   .row { align-items: stretch; flex-direction: column; }
   .row > .port-field { flex-basis: auto; }
-  .workbench { grid-template-columns: 1fr; }
+  .workbench { flex-direction: column; }
   .section-heading { align-items: flex-start; flex-direction: column; }
 }

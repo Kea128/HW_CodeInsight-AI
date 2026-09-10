@@ -87,21 +87,32 @@ async def list_remote_scopes(project_id: str):
         raise HTTPException(status_code=404, detail="远程项目不存在") from error
 
 
-@router.post(
-    "/projects/{project_id}/scopes/detect", response_model=KnowledgeDetectResponse
+def _detect_remote_scopes_payload(project_id: str) -> dict:
+    project = manager.store.get_remote_project(project_id)
+    if not project:
+        raise KeyError(project_id)
+    return {
+        "workspace_root": project["remote_path"],
+        "candidates": manager.detect_scopes(project_id),
+    }
+
+
+@router.api_route(
+    "/projects/{project_id}/scopes/detect",
+    methods=["GET", "POST"],
+    response_model=KnowledgeDetectResponse,
+)
+@router.api_route(
+    "/projects/{project_id}/detect-scopes",
+    methods=["GET", "POST"],
+    response_model=KnowledgeDetectResponse,
 )
 async def detect_remote_scopes(project_id: str):
     try:
-        project = manager.store.get_remote_project(project_id)
-        if not project:
-            raise KeyError(project_id)
-        return {
-            "workspace_root": project["remote_path"],
-            "candidates": manager.detect_scopes(project_id),
-        }
+        return _detect_remote_scopes_payload(project_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="远程项目不存在") from error
-    except RemoteProjectError as error:
+    except (RemoteProjectError, ValueError, OSError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 

@@ -56,8 +56,9 @@ def knowledge_label(workspace_root: str, included_dirs: list[str] | None) -> str
     return f"{root_name} / {', '.join(dirs)}"
 
 
-def detect_subrepos(workspace_root: str) -> list[KnowledgeCandidate]:
-    root = Path(normalize_workspace_root(workspace_root))
+def list_child_candidates(root: Path) -> list[KnowledgeCandidate]:
+    if not root.is_dir():
+        raise ValueError("目录不存在，请先完成同步或检查路径")
     candidates: list[KnowledgeCandidate] = []
     for child in sorted(root.iterdir(), key=lambda path: path.name.lower()):
         if not child.is_dir() or child.name.startswith(".") or child.name in _SKIP_DIRS:
@@ -89,6 +90,10 @@ def detect_subrepos(workspace_root: str) -> list[KnowledgeCandidate]:
             )
         )
     return candidates
+
+
+def detect_subrepos(workspace_root: str) -> list[KnowledgeCandidate]:
+    return list_child_candidates(Path(normalize_workspace_root(workspace_root)))
 
 
 def upsert_spaces(

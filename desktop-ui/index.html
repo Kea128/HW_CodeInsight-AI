@@ -64,7 +64,7 @@
           <button id="refresh-button" class="secondary" type="button">刷新全部</button>
         </div>
         <div id="refresh-error" class="error-card" role="alert" hidden></div>
-        <div class="workbench">
+        <div class="workbench" id="workbench">
           <section class="workbench-col panel" aria-labelledby="projects-heading">
             <div class="section-heading compact">
               <h2 id="projects-heading">项目来源</h2>
@@ -87,7 +87,14 @@
               </div>
             </div>
           </section>
-
+          <div
+            class="workbench-splitter"
+            id="workbench-splitter-1"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整项目来源与知识库宽度"
+            tabindex="0"
+          ></div>
           <section class="workbench-col panel" aria-labelledby="knowledge-heading">
             <div class="section-heading compact">
               <h2 id="knowledge-heading">知识库</h2>
@@ -100,7 +107,14 @@
               </div>
             </div>
           </section>
-
+          <div
+            class="workbench-splitter"
+            id="workbench-splitter-2"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整知识库与分析任务宽度"
+            tabindex="0"
+          ></div>
           <section class="workbench-col panel tasks-workspace" aria-labelledby="tasks-heading">
             <div class="section-heading compact">
               <h2 id="tasks-heading">分析任务</h2>

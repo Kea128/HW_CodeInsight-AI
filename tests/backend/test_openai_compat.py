@@ -37,3 +37,12 @@ def test_operation_log_redacts_secrets(monkeypatch, tmp_path):
     assert "sk-secret" not in text
     assert "qwen-plus" in text
     assert (tmp_path / "CodeInsight-AI" / "operation.log").is_file()
+
+
+def test_operation_log_reads_file_after_memory_cleared(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    clear_events_for_tests()
+    log_event("analyze", "开始分析")
+    clear_events_for_tests()
+    assert recent_events()[-1]["event"] == "analyze"
+    assert "开始分析" in export_text()
