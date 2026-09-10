@@ -1609,26 +1609,79 @@ async function fetchOperationLogText() {
   throw lastError || new Error("读取操作日志失败");
 }
 
-async function loadOperationLog() {
+function operationLogText() {
+  const box = document.querySelector("#operation-log");
+  if (!box) return "";
+  return String(box.value ?? box.textContent ?? "");
+}
+
+function setOperationLogText(text) {
   const box = document.querySelector("#operation-log");
   if (!box) return;
+  if ("value" in box) box.value = text;
+  else box.textContent = text;
+  box.scrollTop = box.scrollHeight;
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text ?? "");
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (invoke) {
+    try {
+      await invoke("write_clipboard", { text: value });
+      return;
+    } catch {
+      /* use browser fallbacks */
+    }
+  }
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      /* use execCommand */
+    }
+  }
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "");
+  area.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0";
+  document.body.append(area);
+  area.focus();
+  area.select();
+  area.setSelectionRange(0, value.length);
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    area.remove();
+  }
+  if (copied) return;
+  const box = document.querySelector("#operation-log");
+  if (box && typeof box.select === "function") {
+    box.focus();
+    box.select();
+  }
+  throw new Error("自动复制失败。请在日志框里按 Ctrl+A，再按 Ctrl+C。");
+}
+
+async function loadOperationLog() {
   const empty = "暂无操作记录。连接 Ubuntu 或开始分析后会写在这里。";
   try {
     const text = await fetchOperationLogText();
-    box.textContent = text || empty;
+    setOperationLogText(text || empty);
   } catch (error) {
     try {
       const text = await readOperationLogFromHost();
-      box.textContent = text || empty;
+      setOperationLogText(text || empty);
     } catch {
       if (error?.status === 404 || /not found/i.test(errorMessage(error))) {
-        box.textContent = `${empty}\n\n分析引擎暂未提供日志接口，可点「打开日志目录」查看 operation.log。`;
+        setOperationLogText(`${empty}\n\n分析引擎暂未提供日志接口，可点「打开日志目录」查看 operation.log。`);
       } else {
-        box.textContent = `读取操作日志失败：${errorMessage(error)}`;
+        setOperationLogText(`读取操作日志失败：${errorMessage(error)}`);
       }
     }
   }
-  box.scrollTop = box.scrollHeight;
 }
 
 document.querySelector("#settings-button").addEventListener("click", () => {
@@ -1639,12 +1692,11 @@ document.querySelector("#refresh-operation-log-button").addEventListener("click"
   loadOperationLog();
 });
 document.querySelector("#copy-operation-log-button").addEventListener("click", async () => {
-  const text = document.querySelector("#operation-log")?.textContent || "";
   try {
-    await navigator.clipboard.writeText(text);
+    await copyTextToClipboard(operationLogText());
     window.alert("操作日志已复制。发给开发者时请整段粘贴。");
-  } catch {
-    window.prompt("请复制以下操作日志：", text);
+  } catch (error) {
+    window.alert(errorMessage(error));
   }
 });
 document.querySelector("#open-operation-log-button").addEventListener("click", async () => {
@@ -1878,10 +1930,10 @@ document.querySelector("#copy-engine-diagnostics-button").addEventListener("clic
     }
   }
   try {
-    await navigator.clipboard.writeText(text);
+    await copyTextToClipboard(text);
     document.querySelector("#engine-recovery-message").textContent = "诊断信息已复制（不包含令牌或密码）。";
-  } catch {
-    window.prompt("请复制以下诊断信息：", text);
+  } catch (error) {
+    window.alert(errorMessage(error));
   }
 });
 

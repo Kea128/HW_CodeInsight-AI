@@ -127,6 +127,7 @@ async function boot() {
   document.write(html.replace(/<script[\s\S]*?<\/script>/g, ""));
   document.close();
   window.alert = vi.fn();
+  window.prompt = vi.fn();
   window.confirm = vi.fn(() => true);
   window.fetch = vi.fn(route);
   window.__TAURI__ = undefined;
@@ -237,9 +238,55 @@ describe("desktop workspace UI", () => {
     expect(Number(cols[0].style.flexGrow)).toBeCloseTo(333.333, 2);
     document.querySelector("#settings-button").click();
     await vi.waitFor(() => {
-      expect(document.querySelector("#operation-log").textContent).toContain("同步完成");
-      expect(document.querySelector("#operation-log").textContent).not.toMatch(/not found/i);
+      expect(document.querySelector("#operation-log").value).toContain("同步完成");
+      expect(document.querySelector("#operation-log").value).not.toMatch(/not found/i);
     });
+  });
+
+  it("copies the operation log through Tauri instead of window.prompt", async () => {
+    await boot();
+    const written = [];
+    window.__TAURI__ = {
+      core: {
+        invoke: vi.fn(async (command, payload) => {
+          if (command === "write_clipboard") {
+            written.push(payload.text);
+            return null;
+          }
+          throw new Error(`unexpected ${command}`);
+        }),
+      },
+    };
+    document.querySelector("#settings-button").click();
+    await vi.waitFor(() => {
+      expect(document.querySelector("#operation-log").value).toContain("同步完成");
+    });
+    document.querySelector("#copy-operation-log-button").click();
+    await vi.waitFor(() => {
+      expect(written.join("")).toContain("同步完成");
+      expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("已复制"));
+    });
+    expect(window.prompt).not.toHaveBeenCalled();
+  });
+
+  it("falls back to execCommand when the clipboard API is blocked", async () => {
+    await boot();
+    navigator.clipboard = {
+      writeText: vi.fn(async () => {
+        throw new Error("NotAllowedError");
+      }),
+    };
+    document.execCommand = vi.fn(() => true);
+    document.querySelector("#settings-button").click();
+    await vi.waitFor(() => {
+      expect(document.querySelector("#operation-log").value).toContain("同步完成");
+    });
+    document.querySelector("#copy-operation-log-button").click();
+    await vi.waitFor(() => {
+      expect(document.execCommand).toHaveBeenCalledWith("copy");
+      expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("已复制"));
+    });
+    expect(window.prompt).not.toHaveBeenCalled();
   });
 
   it("renders failed task details and a working retry action", async () => {

@@ -359,7 +359,10 @@ summary { cursor: pointer; color: var(--accent); }
 .drawer-tabs { margin-bottom: 18px; }
 .settings-block, .settings-section { display: grid; gap: 12px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
 .operation-log {
-  max-height: 220px;
+  display: block;
+  width: 100%;
+  min-height: 180px;
+  max-height: 280px;
   overflow: auto;
   margin: 0;
   padding: 10px 12px;
@@ -370,6 +373,8 @@ summary { cursor: pointer; color: var(--accent); }
   font: 11px/1.5 var(--mono);
   white-space: pre-wrap;
   word-break: break-word;
+  resize: vertical;
+  user-select: text;
 }
 form.settings-section { margin-top: 0; padding-top: 0; border-top: 0; }
 .settings-section h3 { margin: 0; }

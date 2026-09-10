@@ -16,7 +16,11 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     assert "自定义接口通常没有 text-embedding-3-small" in html
     assert 'id="embedder-mode"' in html
     assert 'id="operation-log"' in html
+    assert "<textarea id=\"operation-log\"" in html or "<textarea id='operation-log'" in html
     assert 'id="copy-operation-log-button"' in html
+    assert "function copyTextToClipboard" in script
+    assert 'invoke("write_clipboard"' in script
+    assert "window.prompt" not in script
     assert "/desktop/logs" in script
     assert "/desktop/operation-log" in script
     assert "read_operation_log" in script

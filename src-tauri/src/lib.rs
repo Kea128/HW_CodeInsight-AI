@@ -888,6 +888,13 @@ fn read_operation_log(limit: Option<u32>) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn write_clipboard(text: String) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text(text))
+        .map_err(|error| describe_error("无法写入剪贴板", error))
+}
+
+#[tauri::command]
 fn open_daemon_log_directory(app: tauri::AppHandle) -> Result<(), String> {
     let path = daemon_log_file();
     let directory = path
@@ -935,6 +942,7 @@ pub fn run() {
             open_manual_update,
             daemon_log_path,
             read_operation_log,
+            write_clipboard,
             open_daemon_log_directory,
             restart_app,
             desktop_session_token,
