@@ -1,0 +1,12 @@
+---
+description: Run the desktop release verification workflow before any version bump, tag, or publish.
+alwaysApply: true
+---
+
+# Desktop release verification
+
+Before bumping `package.json` / `src-tauri` versions, creating a `desktop-v*` tag, or pushing a desktop release:
+
+1. Run `npm run verify:release` (`scripts/verify-release.ps1`) and wait for exit code 0.
+2. Do not commit, tag, or push the release if any step failed or if `cargo` was missing.
+3. CI runs the same Python/UI gate via `./scripts/verify-release.ps1 -SkipRust` in `.github/workflows/desktop-release.yml`, then `cargo fmt` and `cargo test` in the host job.

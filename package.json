@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "test:desktop-ui": "vitest run desktop-ui",
+    "verify:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1",
     "desktop:prepare": "node scripts/prepare-desktop.mjs",
     "tauri": "tauri"
   },

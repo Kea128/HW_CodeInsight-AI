@@ -95,8 +95,9 @@ jobs:
           New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
           Copy-Item api/dist/codeinsight-daemon.exe src-tauri/binaries/codeinsight-daemon-x86_64-pc-windows-msvc.exe
 
-      - name: Run backend regression tests
-        run: poetry -C api run pytest ../tests/backend -q --tb=short
+      - name: Pre-release verification
+        shell: pwsh
+        run: ./scripts/verify-release.ps1 -SkipRust
 
       - name: Smoke test frozen daemon
         shell: pwsh

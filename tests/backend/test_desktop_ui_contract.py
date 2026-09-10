@@ -8,6 +8,12 @@ def test_ubuntu_form_is_reachable_without_ai_configuration():
     html = (ROOT / "desktop-ui" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "desktop-ui" / "app.js").read_text(encoding="utf-8")
 
+    assert (ROOT / "scripts" / "verify-release.ps1").is_file()
+    assert (ROOT / "scripts" / "verify-release-ui.mjs").is_file()
+    assert '"verify:release"' in (ROOT / "package.json").read_text(encoding="utf-8")
+    assert "verify-release.ps1" in (
+        ROOT / ".github" / "workflows" / "desktop-release.yml"
+    ).read_text(encoding="utf-8")
     assert 'id="app-version"' in html
     assert 'id="settings-app-version"' in html
     assert 'id="connect-ubuntu-button"' in html
